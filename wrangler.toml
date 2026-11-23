@@ -13,4 +13,4 @@ directory = "./public"
 [[d1_databases]]
 binding = "DB"
 database_name = "saesol-db"
-database_id = "여기에-데이터베이스-ID를-붙여넣으세요"
+database_id = "a5edc1af-5e1e-44ee-b92b-d4be9fbe0567"
