@@ -1,0 +1,231 @@
+// 데이터베이스 표(테이블) 설계
+// 앱이 처음 켜질 때 자동으로 만들어집니다. (이미 있으면 그대로 둡니다)
+//
+// 역할(role)
+//   owner   = 원장
+//   teacher = 강사
+//   student = 학생 (나중에 학생 앱을 붙일 때 사용. users.student_id 로 학생과 연결)
+
+export const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    login_id TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('owner','teacher','student')),
+    student_id INTEGER,
+    phone TEXT,
+    photo TEXT,
+    photo_v INTEGER,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    expires_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS students (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    photo TEXT,
+    photo_v INTEGER,
+    birth_date TEXT,
+    school TEXT,
+    grade TEXT,
+    address TEXT,
+    student_phone TEXT,
+    father_name TEXT,
+    father_phone TEXT,
+    mother_name TEXT,
+    mother_phone TEXT,
+    sms_target TEXT NOT NULL DEFAULT '어머니',
+    family_id INTEGER,
+    sibling_note TEXT,
+    status TEXT NOT NULL DEFAULT '재원' CHECK (status IN ('재원','휴원','퇴원')),
+    enrolled_date TEXT,
+    status_date TEXT,
+    status_reason TEXT,
+    memo TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS courses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    teacher_id INTEGER,
+    days TEXT,
+    start_time TEXT,
+    end_time TEXT,
+    room TEXT,
+    fee INTEGER,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS enrollments (
+    course_id INTEGER NOT NULL,
+    student_id INTEGER NOT NULL,
+    fee INTEGER,
+    PRIMARY KEY (course_id, student_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS attendance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    course_id INTEGER NOT NULL,
+    student_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('출석','지각','결석','조퇴')),
+    memo TEXT,
+    checked_by INTEGER,
+    notified_status TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (course_id, student_id, date)
+  )`,
+  `CREATE TABLE IF NOT EXISTS feedback_periods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    subjects TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS feedbacks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    period_id INTEGER NOT NULL,
+    course_id INTEGER NOT NULL,
+    student_id INTEGER NOT NULL,
+    teacher_id INTEGER,
+    content TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '작성중',
+    sent_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (period_id, course_id, student_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    student_id INTEGER,
+    to_phone TEXT,
+    body TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    sent_by INTEGER,
+    ref_type TEXT,
+    ref_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS consultations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id INTEGER NOT NULL,
+    teacher_id INTEGER,
+    subject TEXT,
+    date TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT '학부모 상담',
+    content TEXT NOT NULL,
+    follow_up TEXT,
+    follow_up_done INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS risk_flags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    created_by INTEGER,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    resolution TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT
+  )`,
+  // 교재 배부 내역
+  `CREATE TABLE IF NOT EXISTS book_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    title TEXT NOT NULL,
+    subject TEXT,
+    qty INTEGER NOT NULL DEFAULT 1,
+    price INTEGER,
+    memo TEXT,
+    given_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  // 수납 내역 (교육비 / 교재비)
+  `CREATE TABLE IF NOT EXISTS payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('교육비','교재비')),
+    month TEXT,
+    amount INTEGER NOT NULL,
+    paid_date TEXT NOT NULL,
+    method TEXT,
+    memo TEXT,
+    created_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_att_student_date ON attendance (student_id, date)`,
+  `CREATE INDEX IF NOT EXISTS idx_att_course_date ON attendance (course_id, date)`,
+  `CREATE INDEX IF NOT EXISTS idx_msg_created ON messages (created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_consult_student ON consultations (student_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_books_student ON book_deliveries (student_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_pay_student ON payments (student_id, kind)`,
+  `CREATE INDEX IF NOT EXISTS idx_students_family ON students (family_id)`,
+];
+
+export const DEFAULT_SETTINGS = {
+  academy_name: '새솔학원',
+  mottos: JSON.stringify([
+    '학생 한 명 한 명을 끝까지 챙깁니다.',
+    '기록이 쌓이면 신뢰가 쌓입니다.',
+    '오늘도 좋은 수업을 부탁드립니다.',
+  ]),
+  tpl_attendance: '[{학원}] {학생} 학생이 {날짜} {반} 수업에 {상태}하였습니다.{메모}',
+  tpl_feedback: '[{학원}] {학생} 학생 {과목} 수업 피드백\n\n{내용}\n\n- {선생님} 드림',
+  send_mode: 'preview',
+  // 강사에게 보여 줄 학생 정보 (원장은 항상 전부 봅니다)
+  teacher_view: JSON.stringify({
+    birth: true,
+    address: false,
+    parents: true,
+    siblings: true,
+    memo: true,
+    fees: false,
+    books: true,
+    tuition: false,
+    bookpay: false,
+  }),
+};
+
+export const TEACHER_VIEW_LABELS = {
+  birth: '생년월일',
+  address: '주소',
+  parents: '부모님 성함·연락처',
+  siblings: '형제·자매',
+  memo: '특이사항 메모',
+  fees: '수강료',
+  books: '교재 배부 내역 (보기·기록)',
+  tuition: '교육비 수납 내역',
+  bookpay: '교재비 수납 내역',
+};
+
+const MIGRATIONS = [
+  'ALTER TABLE users ADD COLUMN photo TEXT',
+  'ALTER TABLE users ADD COLUMN photo_v INTEGER',
+  'ALTER TABLE courses ADD COLUMN fee INTEGER',
+  'ALTER TABLE enrollments ADD COLUMN fee INTEGER',
+  'ALTER TABLE consultations ADD COLUMN subject TEXT',
+];
+
+let initialized = false;
+
+export async function ensureSchema(db) {
+  if (initialized) return;
+  await db.batch(SCHEMA.map((sql) => db.prepare(sql)));
+  // 예전에 만든 데이터베이스에 새 칸이 없으면 추가합니다.
+  for (const sql of MIGRATIONS) {
+    try { await db.prepare(sql).run(); } catch (e) { /* 이미 있으면 그냥 넘어갑니다 */ }
+  }
+  initialized = true;
+}
