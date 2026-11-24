@@ -1346,7 +1346,8 @@ route('POST', '/api/bills/send', async ({ db, env, user, body }) => {
     const useT = kind !== 'book' && t.tuition_due > 0, useB = kind !== 'tuition' && t.book_due > 0;
     if (useT) lines.push(`· ${mm}월 교육비 ${t.tuition_due.toLocaleString('ko-KR')}원${t.discount ? ` (할인 ${t.discount.toLocaleString('ko-KR')}원 적용)` : ''}${t.paid ? ` (이미 ${t.paid.toLocaleString('ko-KR')}원 납부)` : ''}`);
     if (useB) lines.push(`· 교재비 ${t.book_due.toLocaleString('ko-KR')}원${t.recent_books ? ` (${t.recent_books})` : ''}`);
-    const text = fillTemplate(settings.tpl_bill, { 학원: settings.academy_name, 학생: t.name, 월: mm, 내역: lines.join('\n'), 합계: `${t.total.toLocaleString('ko-KR')}원`, 계좌: accountText(settings, useT, useB) });
+    const tpl = kind === 'tuition' ? settings.tpl_bill_tuition : kind === 'book' ? settings.tpl_bill_book : settings.tpl_bill;
+    const text = fillTemplate(tpl, { 학원: settings.academy_name, 학생: t.name, 월: mm, 내역: lines.join('\n'), 합계: `${t.total.toLocaleString('ko-KR')}원`, 계좌: accountText(settings, useT, useB) });
     const parts = messagesFor(t._r, { kind: '청구서', text, ref_type: 'bill' });
     msgs.push(...parts);
     billInfo.push({ t, lines, n: parts.length });
@@ -1803,7 +1804,9 @@ route('PUT', '/api/settings', async ({ db, env, body }) => {
   if ('book_suppliers' in body) set.push(['book_suppliers', JSON.stringify((body.book_suppliers || []).map(clean).filter(Boolean))]);
   if ('bank_account' in body) set.push(['bank_account', clean(body.bank_account) || '']);
   if ('bank_account_book' in body) set.push(['bank_account_book', clean(body.bank_account_book) || '']);
-  if ('tpl_bill' in body) set.push(['tpl_bill', need(body.tpl_bill, '청구서 문구')]);
+  if ('tpl_bill' in body) set.push(['tpl_bill', need(body.tpl_bill, '함께 청구 문구')]);
+  if ('tpl_bill_tuition' in body) set.push(['tpl_bill_tuition', need(body.tpl_bill_tuition, '교육비 청구서 문구')]);
+  if ('tpl_bill_book' in body) set.push(['tpl_bill_book', need(body.tpl_bill_book, '교재비 청구서 문구')]);
   if ('teacher_view' in body) {
     const tv = body.teacher_view || {};
     set.push(['teacher_view', JSON.stringify(Object.fromEntries(Object.keys(TEACHER_VIEW_LABELS).map((k) => [k, !!tv[k]])))]);

@@ -1349,7 +1349,10 @@
         <label class="field"><span>교육비 입금 계좌</span><input type="text" name="bank_account" value="${h(s.bank_account || '')}" placeholder="예: 농협 123-4567-8901 (예금주 새솔학원)"></label>
         <label class="field"><span>교재비 입금 계좌 (교육비와 같으면 비워 두세요)</span><input type="text" name="bank_account_book" value="${h(s.bank_account_book || '')}" placeholder="예: 국민 987-65-43210 (예금주 이은희)"></label>
         <p class="small muted" style="margin-top:-6px">청구서에는 청구하는 항목에 맞는 계좌만 들어가요. 교육비·교재비를 같이 청구하면 두 계좌가 따로 적혀요.</p>
-        <label class="field"><span>청구서 문구 — 쓸 수 있는 칸: {학원} {학생} {월} {내역} {합계} {계좌}</span><textarea name="tpl_bill" style="min-height:130px">${h(s.tpl_bill)}</textarea></label>
+        <p class="small muted">청구서 문구 — 쓸 수 있는 칸: {학원} {학생} {월} {내역} {합계} {계좌}</p>
+        <label class="field"><span>💳 교육비 청구서 문구</span><textarea name="tpl_bill_tuition" style="min-height:130px">${h(s.tpl_bill_tuition)}</textarea></label>
+        <label class="field"><span>📚 교재비 청구서 문구</span><textarea name="tpl_bill_book" style="min-height:130px">${h(s.tpl_bill_book)}</textarea></label>
+        <label class="field"><span>🧾 함께 청구할 때 문구</span><textarea name="tpl_bill" style="min-height:130px">${h(s.tpl_bill)}</textarea></label>
         <h2 class="mt">강사에게 보여 줄 학생 정보</h2>
         <p class="small muted" style="margin-top:-6px">원장님은 항상 전부 볼 수 있어요. 강사는 체크한 항목만, 그리고 자기 반 학생만 볼 수 있어요. 감독은 전체 학생의 인적사항·연락처를 보고, 수강료·수납은 볼 수 없어요(주소는 이 체크를 따라요). 수납 기록은 원장님만 쓸 수 있어요.</p>
         <div class="view-grid">${Object.entries(s.teacher_view_labels).map(([k, l]) => `<label class="inline-check"><input type="checkbox" name="tv_${k}" ${s.teacher_view[k] ? 'checked' : ''}> ${h(l)}</label>`).join('')}</div>
@@ -1377,7 +1380,7 @@
         const teacher_view = Object.fromEntries(Object.keys(s.teacher_view_labels).map((k) => [k, !!d['tv_' + k]]));
         const discount_items = $$('.disc-row', e.target).map((r) => ({ id: $('[data-did]', r).value, name: $('[data-dname]', r).value, amount: $('[data-damt]', r).value })).filter((x) => x.name.trim());
         const book_suppliers = String(d.suppliers || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-        await api('PUT', '/api/settings', { academy_name: d.academy_name, mottos: [d.motto0, d.motto1, d.motto2], tpl_attendance: d.tpl_attendance, tpl_feedback: d.tpl_feedback, send_mode: d.send_mode, teacher_view, discount_items, book_suppliers, bank_account: d.bank_account, bank_account_book: d.bank_account_book, tpl_bill: d.tpl_bill });
+        await api('PUT', '/api/settings', { academy_name: d.academy_name, mottos: [d.motto0, d.motto1, d.motto2], tpl_attendance: d.tpl_attendance, tpl_feedback: d.tpl_feedback, send_mode: d.send_mode, teacher_view, discount_items, book_suppliers, bank_account: d.bank_account, bank_account_book: d.bank_account_book, tpl_bill: d.tpl_bill, tpl_bill_tuition: d.tpl_bill_tuition, tpl_bill_book: d.tpl_bill_book });
         state.academy = d.academy_name;
         toast('저장했어요');
         renderShell();
@@ -1606,8 +1609,8 @@
       const useT = showT && r.tuition_due > 0, useB = showB && r.book_due > 0;
       if (useT) lines.push(`· ${mm}월 교육비 ${r.tuition_due.toLocaleString('ko-KR')}원${r.discount ? ` (할인 ${r.discount.toLocaleString('ko-KR')}원 적용)` : ''}${r.paid ? ` (이미 ${r.paid.toLocaleString('ko-KR')}원 납부)` : ''}`);
       if (useB) lines.push(`· 교재비 ${r.book_due.toLocaleString('ko-KR')}원${r.recent_books ? ` (${r.recent_books})` : ''}`);
-      const text = st.tpl_bill.replace(/\{([^{}]+)\}/g, (all, k) => ({ 학원: st.academy_name, 학생: r.name, 월: mm, 내역: lines.join('\n'), 합계: `${r.total.toLocaleString('ko-KR')}원`, 계좌: (() => { const t = st.bank_account || '', b = st.bank_account_book || ''; if (!t && !b) return '(학원으로 문의해 주세요)'; if (useT && useB && t && b && t !== b) return `\n· 교육비: ${t}\n· 교재비: ${b}`; if (useB && !useT) return b || t; return t || b; })() })[k] ?? all);
-      modal({ title: `${r.name} ${KL[kind]} 청구서 미리 보기`, body: `<div class="preview">${h(text)}</div><p class="small muted">문구는 [설정 → 청구서 문구]에서 바꿀 수 있어요.</p>` });
+      const text = (kind === 'tuition' ? st.tpl_bill_tuition : kind === 'book' ? st.tpl_bill_book : st.tpl_bill).replace(/\{([^{}]+)\}/g, (all, k) => ({ 학원: st.academy_name, 학생: r.name, 월: mm, 내역: lines.join('\n'), 합계: `${r.total.toLocaleString('ko-KR')}원`, 계좌: (() => { const t = st.bank_account || '', b = st.bank_account_book || ''; if (!t && !b) return '(학원으로 문의해 주세요)'; if (useT && useB && t && b && t !== b) return `\n· 교육비: ${t}\n· 교재비: ${b}`; if (useB && !useT) return b || t; return t || b; })() })[k] ?? all);
+      modal({ title: `${r.name} ${KL[kind]} 청구서 미리 보기`, body: `<div class="preview">${h(text)}</div><p class="small muted">${KL[kind]} 청구서 문구는 [설정 → 청구서]에서 따로 바꿀 수 있어요.</p>` });
     };
     $('#send').onclick = async () => {
       const ids = picked();
