@@ -2,7 +2,7 @@
 // 화면(public 폴더)은 그대로 보여 주고, /api/ 로 시작하는 주소만 여기서 처리합니다.
 
 import { ensureSchema, DEFAULT_SETTINGS, TEACHER_VIEW_LABELS } from './schema.js';
-import { hashPassword, verifyPassword, createSession, sessionCookie, currentUser } from './auth.js';
+import { hashPassword, verifyPassword, createSession, sessionCookie, currentUser, newToken } from './auth.js';
 import { sendMessages, fillTemplate, solapiReady } from './sms.js';
 
 // ───────── 공통 도구 ─────────
@@ -449,6 +449,7 @@ route('GET', '/api/students/:id', async ({ db, user, params }) => {
   if (view.siblings && raw.family_id) jobs.siblings = q.all(db, `SELECT id, name, school, grade, status, photo_v FROM students WHERE family_id = ? AND id != ? ORDER BY birth_date, name`, raw.family_id, id);
   if (view.books || view.bookpay) jobs.books = q.all(db, `SELECT b.*, u.name AS given_by_name, bk.image_v AS book_image_v FROM book_deliveries b LEFT JOIN users u ON u.id = b.given_by LEFT JOIN books bk ON bk.id = b.book_id WHERE b.student_id = ? ORDER BY b.date DESC, b.id DESC`, id);
   jobs.subjects = q.all(db, 'SELECT subject, start_date, end_date FROM student_subjects WHERE student_id = ?', id);
+  jobs.words = q.all(db, `SELECT w.id, w.date, w.book, w.range, w.total, w.score, w.pass_score, w.passed, w.attempt, w.photo_v, w.memo, w.teacher_id, u.name AS teacher_name, c.name AS course_name FROM word_tests w LEFT JOIN users u ON u.id = w.teacher_id LEFT JOIN courses c ON c.id = w.course_id WHERE w.student_id = ? ORDER BY w.date DESC, w.id DESC LIMIT 200`, id);
   if (view.fees) jobs.my_discounts = q.all(db, 'SELECT item_id FROM student_discounts WHERE student_id = ?', id);
   if (user.role === 'owner') jobs.bills = q.all(db, `SELECT bl.*, u.name AS sent_by_name FROM bills bl LEFT JOIN users u ON u.id = bl.sent_by WHERE bl.student_id = ? ORDER BY bl.id DESC LIMIT 24`, id);
   if (view.tuition) jobs.tuition = q.all(db, `SELECT p.*, u.name AS created_by_name FROM payments p LEFT JOIN users u ON u.id = p.created_by WHERE p.student_id = ? AND p.kind = '교육비' ORDER BY p.paid_date DESC, p.id DESC`, id);
@@ -1380,7 +1381,8 @@ route('GET', '/api/classlog', async ({ db, user, query }) => {
   // 지난 수업 숙제 검사 누적 (최근 30일 × 횟수)
   const hwMiss = await q.all(db, `SELECT n.student_id, SUM(CASE WHEN n.hw = '×' THEN 1 ELSE 0 END) AS miss, SUM(CASE WHEN n.hw = '△' THEN 1 ELSE 0 END) AS part
     FROM class_log_notes n JOIN class_logs l ON l.id = n.log_id WHERE l.course_id = ? AND l.date >= ? AND l.date < ? GROUP BY n.student_id`, course.id, addDays(date, -30), date);
-  return { log, notes, recent, units, hw_miss: hwMiss, fields: parseFields(course.log_fields) };
+  const words = await q.all(db, 'SELECT id, student_id, score, total, passed, attempt, range, photo_v FROM word_tests WHERE course_id = ? AND date = ? ORDER BY attempt, id', course.id, date);
+  return { log, notes, recent, units, hw_miss: hwMiss, fields: parseFields(course.log_fields), words };
 });
 
 route('PUT', '/api/classlog', async ({ db, user, body }) => {
@@ -1419,6 +1421,135 @@ route('PUT', '/api/classlog', async ({ db, user, body }) => {
   if (stmts.length) await db.batch(stmts);
   return { ok: true, id: log.id };
 });
+
+// ───────── 영단어 시험 채점 ─────────
+const WORD_PHOTO_MAX = 900 * 1024;
+function wordBooks(s) { try { const a = JSON.parse(s.word_books); return Array.isArray(a) ? a.filter((b) => b && b.name) : []; } catch { return []; } }
+const attemptLabel = (n) => (n <= 1 ? '본시험' : `재시험${n > 2 ? ' ' + (n - 1) + '차' : ''}`);
+const wordPublic = (t) => ({ id: t.id, student_id: t.student_id, course_id: t.course_id, teacher_id: t.teacher_id, date: t.date, book: t.book, range: t.range, total: t.total, score: t.score, pass_score: t.pass_score, passed: !!t.passed, attempt: t.attempt, parent_id: t.parent_id, memo: t.memo, photo_v: t.photo_v, sent_at: t.sent_at, teacher_name: t.teacher_name, student_name: t.student_name });
+
+// 채점 화면: 반 학생 + 그날 시험 결과
+route('GET', '/api/word/class', async ({ db, user, query }) => {
+  const course = await mustSeeCourse(db, user, Number(query.course_id));
+  const date = isDate(query.date) ? query.date : today();
+  const students = await q.all(db, `SELECT s.id, s.name, s.school, s.grade, s.photo_v, s.student_phone FROM enrollments e JOIN students s ON s.id = e.student_id WHERE e.course_id = ? AND s.status = '재원' ORDER BY s.name`, course.id);
+  const tests = await q.all(db, `SELECT w.*, u.name AS teacher_name FROM word_tests w LEFT JOIN users u ON u.id = w.teacher_id WHERE w.course_id = ? AND w.date = ? ORDER BY w.attempt, w.id`, course.id, date);
+  // 아직 통과 못 한 지난 시험 (재시험 대기)
+  const pending = await q.all(db, `SELECT w.* FROM word_tests w WHERE w.course_id = ? AND w.date < ? AND w.date >= ? AND w.passed = 0
+      AND NOT EXISTS (SELECT 1 FROM word_tests x WHERE x.parent_id = IFNULL(w.parent_id, w.id) AND x.attempt > w.attempt)
+      ORDER BY w.date DESC`, course.id, date, addDays(date, -30));
+  const settings = await getSettings(db);
+  const units = await q.all(db, 'SELECT book, title FROM course_units WHERE course_id = ? ORDER BY seq, id', course.id);
+  const last = await q.first(db, 'SELECT book, range, total FROM word_tests WHERE course_id = ? ORDER BY id DESC LIMIT 1', course.id);
+  return {
+    course, date, units, last,
+    students: students.map((s) => ({ id: s.id, name: s.name, school: s.school, grade: s.grade, photo_v: s.photo_v, has_phone: !!s.student_phone })),
+    tests: tests.map(wordPublic), pending: pending.map(wordPublic),
+    pass_pct: Number(settings.word_pass_pct) || 90, word_books: wordBooks(settings), teacher_has_phone: !!(await q.first(db, 'SELECT phone FROM users WHERE id = ?', course.teacher_id || user.id) || {}).phone,
+  };
+});
+
+// 시험 결과 저장 (+ 사진) → 학생·담당 선생님께 문자
+route('POST', '/api/word/tests', async ({ db, env, user, body, url }) => {
+  const sid = Number(body.student_id);
+  const s = await mustSeeStudent(db, user, sid);
+  const course = body.course_id ? await mustSeeCourse(db, user, Number(body.course_id)) : null;
+  const total = Math.trunc(Number(body.total) || 0), score = Math.trunc(Number(body.score));
+  if (total < 1 || total > 500) fail(400, '문항 수를 입력해 주세요');
+  if (!(score >= 0 && score <= total)) fail(400, '맞은 개수가 문항 수보다 많아요');
+  const settings = await getSettings(db);
+  const pass = body.pass_score != null && body.pass_score !== '' ? Math.trunc(Number(body.pass_score)) : Math.ceil((total * (Number(settings.word_pass_pct) || 90)) / 100);
+  let attempt = 1, parentId = null;
+  if (body.retest_of) {
+    const prev = await q.first(db, 'SELECT * FROM word_tests WHERE id = ?', Number(body.retest_of));
+    if (!prev || prev.student_id !== sid) fail(400, '재시험할 시험을 찾을 수 없어요');
+    parentId = prev.parent_id || prev.id;
+    attempt = (await q.first(db, 'SELECT MAX(attempt) AS m FROM word_tests WHERE id = ? OR parent_id = ?', parentId, parentId)).m + 1;
+  }
+  let photo = null;
+  if (body.photo) {
+    photo = String(body.photo);
+    if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(photo)) fail(400, '사진 파일만 올릴 수 있어요');
+    if (photo.length > WORD_PHOTO_MAX) fail(400, '사진이 너무 커요');
+  }
+  const token = newToken().slice(0, 24);
+  const date = isDate(body.date) ? body.date : today();
+  const r = await q.run(db, `INSERT INTO word_tests (student_id, course_id, teacher_id, date, book, range, total, score, pass_score, passed, attempt, parent_id, memo, photo, photo_v, token)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    sid, course ? course.id : null, user.id, date, clean(body.book), clean(body.range), total, score, pass, score >= pass ? 1 : 0, attempt, parentId, clean(body.memo), photo, photo ? Date.now() : null, token);
+  const id = r.meta.last_row_id;
+  // 보내기: 학생 + 담당 선생님 (사진이 있거나 보내기를 골랐을 때)
+  let sent = [];
+  if (body.send !== false) {
+    const link = `${url.origin}/w/${token}`;
+    const text = fillTemplate(settings.tpl_word, { 학원: settings.academy_name, 학생: s.name, 차수: attemptLabel(attempt), 교재: clean(body.book) || '', 범위: clean(body.range) || '', 점수: `${score}/${total}`, 결과: score >= pass ? '통과' : `불통 · 통과 기준 ${pass}개`, 링크: link });
+    const tchId = course && course.teacher_id ? course.teacher_id : user.id;
+    const tch = await q.first(db, 'SELECT name, phone FROM users WHERE id = ?', tchId);
+    const msgs = [];
+    if (s.student_phone) msgs.push({ kind: '단어시험', student_id: sid, to: s.student_phone, text, ref_type: 'word', ref_id: id });
+    if (tch && tch.phone) msgs.push({ kind: '단어시험', student_id: sid, to: phone(tch.phone), text: `[담당 선생님용] ${text}`, ref_type: 'word', ref_id: id });
+    if (msgs.length) {
+      const res = await sendMessages(env, db, settings, user.id, msgs);
+      sent = msgs.map((m, i) => ({ to: m === msgs[0] && s.student_phone ? '학생' : '선생님', status: res[i].status, error: res[i].error }));
+      await q.run(db, `UPDATE word_tests SET sent_at = datetime('now') WHERE id = ?`, id);
+    }
+  }
+  return { ok: true, id, passed: score >= pass, pass_score: pass, attempt, sent };
+});
+
+route('PATCH', '/api/word/tests/:id', async ({ db, user, body, params }) => {
+  const t = await q.first(db, 'SELECT * FROM word_tests WHERE id = ?', Number(params.id));
+  if (!t) fail(404, '시험을 찾을 수 없어요');
+  await mustSeeStudent(db, user, t.student_id);
+  if (!seesAll(user) && t.teacher_id !== user.id) fail(403, '내가 기록한 시험만 고칠 수 있어요');
+  const total = 'total' in body ? Math.trunc(Number(body.total) || 0) : t.total;
+  const score = 'score' in body ? Math.trunc(Number(body.score)) : t.score;
+  if (total < 1 || !(score >= 0 && score <= total)) fail(400, '점수를 확인해 주세요');
+  const pass = 'pass_score' in body ? Math.trunc(Number(body.pass_score)) : t.pass_score;
+  let photo = t.photo, pv = t.photo_v;
+  if (body.photo) {
+    if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(String(body.photo)) || String(body.photo).length > WORD_PHOTO_MAX) fail(400, '사진을 확인해 주세요');
+    photo = String(body.photo); pv = Date.now();
+  }
+  await q.run(db, 'UPDATE word_tests SET total = ?, score = ?, pass_score = ?, passed = ?, book = ?, range = ?, memo = ?, photo = ?, photo_v = ? WHERE id = ?',
+    total, score, pass, score >= pass ? 1 : 0, 'book' in body ? clean(body.book) : t.book, 'range' in body ? clean(body.range) : t.range, 'memo' in body ? clean(body.memo) : t.memo, photo, pv, t.id);
+  return { ok: true };
+});
+route('DELETE', '/api/word/tests/:id', async ({ db, user, params }) => {
+  const t = await q.first(db, 'SELECT * FROM word_tests WHERE id = ?', Number(params.id));
+  if (!t) fail(404, '시험을 찾을 수 없어요');
+  if (!seesAll(user) && t.teacher_id !== user.id) fail(403, '내가 기록한 시험만 지울 수 있어요');
+  await q.run(db, 'DELETE FROM word_tests WHERE id = ?', t.id);
+  return { ok: true };
+});
+route('GET', '/api/word/photos/:id', async ({ db, user, params }) => {
+  const t = await q.first(db, 'SELECT student_id, photo FROM word_tests WHERE id = ?', Number(params.id));
+  if (!t || !t.photo) fail(404, '사진이 없어요');
+  if (!(await canSeeStudent(db, user, t.student_id))) fail(403, '볼 수 없는 사진이에요');
+  return photoResponse(t.photo);
+});
+// 학생별 단어시험 기록
+route('GET', '/api/word/student/:id', async ({ db, user, params }) => {
+  const sid = Number(params.id);
+  await mustSeeStudent(db, user, sid);
+  const tests = await q.all(db, `SELECT w.*, u.name AS teacher_name, c.name AS course_name FROM word_tests w LEFT JOIN users u ON u.id = w.teacher_id LEFT JOIN courses c ON c.id = w.course_id WHERE w.student_id = ? ORDER BY w.date DESC, w.id DESC LIMIT 200`, sid);
+  return { tests: tests.map((t) => ({ ...wordPublic(t), course_name: t.course_name })) };
+});
+
+// 링크로 여는 시험지 (로그인 없이, 링크를 받은 사람만)
+async function wordSheetPage(db, token, wantPhoto) {
+  const t = await q.first(db, 'SELECT w.*, s.name AS student_name FROM word_tests w JOIN students s ON s.id = w.student_id WHERE w.token = ?', token);
+  if (!t) return new Response('시험지를 찾을 수 없어요', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+  if (wantPhoto) return t.photo ? photoResponse(t.photo) : new Response('사진 없음', { status: 404 });
+  const settings = await getSettings(db);
+  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const html = `<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${esc(t.student_name)} 단어시험</title>
+<style>body{margin:0;font-family:-apple-system,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:#f7f9f2;color:#1f330a}.w{max-width:560px;margin:0 auto;padding:18px}.c{background:#fff;border-radius:16px;padding:18px;box-shadow:0 2px 10px rgba(0,0,0,.06);margin-bottom:12px}h1{font-size:20px;margin:0 0 4px}.m{color:#6b7a5c;font-size:14px}.s{font-size:40px;font-weight:800;margin:10px 0}.p{display:inline-block;padding:4px 12px;border-radius:99px;font-weight:700}.ok{background:#8dc63f}.no{background:#fdeeec;color:#c8443c}img{width:100%;border-radius:12px;display:block}</style></head>
+<body><div class="w"><div class="c"><div class="m">${esc(settings.academy_name)} · ${esc(t.date)}</div><h1>${esc(t.student_name)} 단어시험 ${esc(attemptLabel(t.attempt))}</h1><div class="m">${esc(t.book || '')} ${esc(t.range || '')}</div>
+<div class="s">${t.score} / ${t.total}</div><span class="p ${t.passed ? 'ok' : 'no'}">${t.passed ? '통과' : '불통 · 통과 기준 ' + t.pass_score + '개'}</span>${t.memo ? `<p>${esc(t.memo)}</p>` : ''}</div>
+${t.photo ? `<div class="c"><img src="/w/${esc(token)}/photo" alt="시험지"></div>` : ''}</div></body></html>`;
+  return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', 'x-robots-tag': 'noindex' } });
+}
 
 // ───────── 진도표 ─────────
 async function mustEditCourse(db, user, courseId) {
@@ -1552,7 +1683,9 @@ route('GET', '/api/logs', async ({ db, user, query }) => {
       (SELECT COUNT(*) FROM class_log_notes n WHERE n.log_id = l.id AND n.achieve = '상') AS ach_h,
       (SELECT COUNT(*) FROM class_log_notes n WHERE n.log_id = l.id AND n.achieve = '중') AS ach_m,
       (SELECT COUNT(*) FROM class_log_notes n WHERE n.log_id = l.id AND n.achieve = '하') AS ach_l,
-      (SELECT group_concat(x.title, ', ') FROM course_units x WHERE x.done_log_id = l.id) AS units
+      (SELECT group_concat(x.title, ', ') FROM course_units x WHERE x.done_log_id = l.id) AS units,
+      (SELECT COUNT(DISTINCT w.student_id) FROM word_tests w WHERE w.course_id = c.id AND w.date = l.date AND w.attempt = 1) AS word_n,
+      (SELECT COUNT(DISTINCT w.student_id) FROM word_tests w WHERE w.course_id = c.id AND w.date = l.date AND w.passed = 1) AS word_pass
      FROM class_logs l JOIN courses c ON c.id = l.course_id LEFT JOIN users u ON u.id = l.teacher_id
      WHERE l.date BETWEEN ? AND ? ${extra} ORDER BY l.date DESC, c.name`, ...params);
   const missing = await missingLogs(db, { from, to, startDate: remindSettings(await getSettings(db)).start_date, teacherId: !seesAll(user) ? user.id : query.teacher_id ? Number(query.teacher_id) : null, courseId: query.course_id ? Number(query.course_id) : null });
@@ -1970,7 +2103,7 @@ route('GET', '/api/settings', async ({ db, env, user }) => {
   const s = await getSettings(db);
   const view = await viewOf(db, { role: 'teacher' });
   if (user.role !== 'owner') return { academy_name: s.academy_name, mottos: parseMottos(s), teacher_view: view };
-  return { ...s, mottos: parseMottos(s), teacher_view: view, teacher_view_labels: TEACHER_VIEW_LABELS, solapi_ready: solapiReady(env), discount_items: discountItems(s), book_suppliers: suppliersOf(s), log_remind: remindSettings(s) };
+  return { ...s, mottos: parseMottos(s), teacher_view: view, teacher_view_labels: TEACHER_VIEW_LABELS, solapi_ready: solapiReady(env), discount_items: discountItems(s), book_suppliers: suppliersOf(s), log_remind: remindSettings(s), word_books: wordBooks(s) };
 });
 
 route('PUT', '/api/settings', async ({ db, env, body }) => {
@@ -1985,6 +2118,9 @@ route('PUT', '/api/settings', async ({ db, env, body }) => {
     set.push(['log_remind', JSON.stringify({ on: !!r.on, after_min: after, sms: !!r.sms, start_date: isDate(r.start_date) ? r.start_date : '' })]);
   }
   if ('tpl_log_remind' in body) set.push(['tpl_log_remind', need(body.tpl_log_remind, '일지 알림 문구')]);
+  if ('word_pass_pct' in body) set.push(['word_pass_pct', String(Math.max(1, Math.min(100, Math.trunc(Number(body.word_pass_pct) || 90))))]);
+  if ('word_books' in body) set.push(['word_books', JSON.stringify((body.word_books || []).map((b) => ({ name: clean(b.name), days: Math.max(1, Math.min(200, Math.trunc(Number(b.days) || 0))) })).filter((b) => b.name))]);
+  if ('tpl_word' in body) set.push(['tpl_word', need(body.tpl_word, '단어시험 문자 문구')]);
   if ('discount_items' in body) {
     const items = (body.discount_items || [])
       .map((x, i) => ({ id: clean(x.id) || `d${Date.now().toString(36)}${i}`, name: clean(x.name), amount: money(x.amount) }))
@@ -2018,6 +2154,11 @@ export default {
   },
   async fetch(request, env) {
     const url = new URL(request.url);
+    const wm = url.pathname.match(/^\/w\/([a-f0-9]{24})(\/photo)?$/);
+    if (wm && env.DB) {
+      await ensureSchema(env.DB);
+      return wordSheetPage(env.DB, wm[1], !!wm[2]);
+    }
     if (!url.pathname.startsWith('/api/')) {
       return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
     }

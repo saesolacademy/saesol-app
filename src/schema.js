@@ -230,6 +230,28 @@ export const SCHEMA = [
     sent_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (course_id, date)
   )`,
+  // 영단어 시험 (본시험 attempt=1, 재시험 2, 3 …)
+  `CREATE TABLE IF NOT EXISTS word_tests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id INTEGER NOT NULL,
+    course_id INTEGER,
+    teacher_id INTEGER,
+    date TEXT NOT NULL,
+    book TEXT,
+    range TEXT,
+    total INTEGER NOT NULL,
+    score INTEGER NOT NULL,
+    pass_score INTEGER NOT NULL,
+    passed INTEGER NOT NULL,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    parent_id INTEGER,
+    memo TEXT,
+    photo TEXT,
+    photo_v INTEGER,
+    token TEXT,
+    sent_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
   // 교재 배부 내역
   `CREATE TABLE IF NOT EXISTS book_deliveries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -272,6 +294,9 @@ export const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_bills_student ON bills (student_id, month)`,
   `CREATE INDEX IF NOT EXISTS idx_units_course ON course_units (course_id, seq)`,
   `CREATE INDEX IF NOT EXISTS idx_logs_date ON class_logs (date)`,
+  `CREATE INDEX IF NOT EXISTS idx_wt_student ON word_tests (student_id, date)`,
+  `CREATE INDEX IF NOT EXISTS idx_wt_course ON word_tests (course_id, date)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_wt_token ON word_tests (token)`,
   `CREATE INDEX IF NOT EXISTS idx_pay_student ON payments (student_id, kind)`,
   `CREATE INDEX IF NOT EXISTS idx_students_family ON students (family_id)`,
 ];
@@ -298,6 +323,14 @@ export const DEFAULT_SETTINGS = {
   // 수업 일지 알림: 수업이 끝나고 after_min 분이 지나도 일지가 없으면 알림
   log_remind: JSON.stringify({ on: true, after_min: 60, sms: true }),
   tpl_log_remind: '[{학원}] {선생님}쌤, 오늘 {반} ({시간}) 수업 일지가 아직 없어요. 시간 되실 때 작성 부탁드려요 🙏',
+  // 영단어 시험
+  word_pass_pct: '90',
+  word_books: JSON.stringify([
+    { name: '워드마스터 고등 Complete', days: 40 },
+    { name: '워드마스터 하이스트', days: 50 },
+    { name: '워드마스터 고등 숙어 1000', days: 50 },
+  ]),
+  tpl_word: '[{학원}] {학생} 단어시험 {차수}\n{교재} {범위}\n점수 {점수} ({결과})\n\n시험지 보기: {링크}',
   bank_account: '',
   bank_account_book: '',
   tpl_bill_tuition: '[{학원}] {학생} 학생 {월}월 교육비 안내\n\n{내역}\n합계 {합계}\n\n입금 계좌: {계좌}\n이미 납부하셨다면 이 문자는 넘겨 주세요. 감사합니다.',
