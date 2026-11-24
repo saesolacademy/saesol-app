@@ -343,6 +343,16 @@ function shapeStudent(s, view) {
   return o;
 }
 
+// 이번 달 교육비 상태 (나눠 내는 경우 합계로 판단)
+function tuitionStatus(fee, paid) {
+  fee = fee || 0;
+  paid = paid || 0;
+  if (!fee) return { state: paid ? '납부' : '-', fee, paid, due: 0 };
+  if (paid >= fee) return { state: '완납', fee, paid, due: 0 };
+  if (paid > 0) return { state: '부분', fee, paid, due: fee - paid };
+  return { state: '미납', fee, paid, due: fee };
+}
+
 // 문자 받을 번호 (어머니 / 아버지 / 둘 다)
 function recipients(s) {
   const t = s.sms_target || '어머니';
@@ -373,15 +383,24 @@ route('GET', '/api/students', async ({ db, user, query }) => {
     db,
     `SELECT s.*,
       (SELECT group_concat(c.subject || ' ' || c.name, ', ') FROM enrollments e JOIN courses c ON c.id = e.course_id WHERE e.student_id = s.id AND c.active = 1) AS courses,
-      (SELECT COUNT(*) FROM students x WHERE s.family_id IS NOT NULL AND x.family_id = s.family_id AND x.id != s.id) AS sibling_count
+      (SELECT COUNT(*) FROM students x WHERE s.family_id IS NOT NULL AND x.family_id = s.family_id AND x.id != s.id) AS sibling_count,
+      (SELECT IFNULL(SUM(IFNULL(e.fee, c.fee)), 0) FROM enrollments e JOIN courses c ON c.id = e.course_id WHERE e.student_id = s.id AND c.active = 1) AS fee_month,
+      (SELECT IFNULL(SUM(p.amount), 0) FROM payments p WHERE p.student_id = s.id AND p.kind = '교육비' AND p.month = ?) AS tuition_paid,
+      (SELECT IFNULL(SUM(IFNULL(b.price, 0) * b.qty), 0) FROM book_deliveries b WHERE b.student_id = s.id) AS book_total,
+      (SELECT IFNULL(SUM(p.amount), 0) FROM payments p WHERE p.student_id = s.id AND p.kind = '교재비') AS book_paid
      FROM students s WHERE ${where.join(' AND ')}
      ORDER BY CASE s.status WHEN '재원' THEN 0 WHEN '휴원' THEN 1 ELSE 2 END, s.name`,
+    today().slice(0, 7),
     ...params
   );
   const view = await viewOf(db, user);
-  return { students: rows.map((s) => {
+  return { month: today().slice(0, 7), students: rows.map((s) => {
     const o = shapeStudent(s, view);
     if (!view.siblings) delete o.sibling_count;
+    if (view.tuition && view.fees) o.tuition = tuitionStatus(s.fee_month, s.tuition_paid);
+    if (view.bookpay) o.book_due = Math.max(0, s.book_total - s.book_paid), o.book_total = s.book_total, o.book_paid = s.book_paid;
+    for (const k of ['fee_month', 'tuition_paid']) delete o[k];
+    if (!view.bookpay) delete o.book_total, delete o.book_paid;
     return o;
   }), view };
 });
@@ -395,14 +414,20 @@ route('GET', '/api/students/:id', async ({ db, user, params }) => {
   const jobs = {
     courses: q.all(db, `SELECT c.id, c.name, c.subject, c.days, c.times, c.start_time, c.end_time, c.teacher_id, c.fee AS course_fee, e.fee AS own_fee, c.active, u.name AS teacher_name, u.photo_v AS teacher_photo_v
                         FROM enrollments e JOIN courses c ON c.id = e.course_id LEFT JOIN users u ON u.id = c.teacher_id WHERE e.student_id = ? ORDER BY c.active DESC, c.subject`, id),
-    attendance: q.all(db, `SELECT a.date, a.status, a.memo, c.name AS course_name, c.subject FROM attendance a JOIN courses c ON c.id = a.course_id WHERE a.student_id = ? AND a.date >= ? ORDER BY a.date DESC`, id, addDays(today(), -60)),
+    attendance: q.all(db, `SELECT a.date, a.status, a.memo, c.name AS course_name, c.subject FROM attendance a JOIN courses c ON c.id = a.course_id WHERE a.student_id = ? AND a.date >= ? ORDER BY a.date DESC`, id, addDays(today(), -180)),
+    logs: q.all(db, `SELECT l.id, l.date, l.content, l.homework, l.course_id, c.name AS course_name, c.subject, u.name AS teacher_name, u.photo_v AS teacher_photo_v, l.teacher_id, n.note, a.status AS att_status
+                     FROM class_logs l JOIN enrollments e ON e.course_id = l.course_id AND e.student_id = ?
+                     JOIN courses c ON c.id = l.course_id LEFT JOIN users u ON u.id = l.teacher_id
+                     LEFT JOIN class_log_notes n ON n.log_id = l.id AND n.student_id = ?
+                     LEFT JOIN attendance a ON a.course_id = l.course_id AND a.student_id = ? AND a.date = l.date
+                     ORDER BY l.date DESC, l.id DESC LIMIT 200`, id, id, id),
     feedbacks: q.all(db, `SELECT f.id, f.content, f.status, f.sent_at, f.updated_at, p.title AS period_title, c.name AS course_name, c.subject FROM feedbacks f JOIN feedback_periods p ON p.id = f.period_id JOIN courses c ON c.id = f.course_id WHERE f.student_id = ? AND f.content != '' ORDER BY p.start_date DESC`, id),
     consultations: q.all(db, `SELECT k.*, u.name AS teacher_name, u.photo_v AS teacher_photo_v FROM consultations k LEFT JOIN users u ON u.id = k.teacher_id WHERE k.student_id = ? ORDER BY k.date DESC, k.id DESC`, id),
     flags: q.all(db, `SELECT r.*, u.name AS created_by_name FROM risk_flags r LEFT JOIN users u ON u.id = r.created_by WHERE r.student_id = ? ORDER BY r.resolved, r.created_at DESC`, id),
     messages: q.all(db, `SELECT m.id, m.kind, m.body, m.status, m.error, m.to_phone, m.created_at, u.name AS sent_by_name FROM messages m LEFT JOIN users u ON u.id = m.sent_by WHERE m.student_id = ? ORDER BY m.id DESC LIMIT 20`, id),
   };
   if (view.siblings && raw.family_id) jobs.siblings = q.all(db, `SELECT id, name, school, grade, status, photo_v FROM students WHERE family_id = ? AND id != ? ORDER BY birth_date, name`, raw.family_id, id);
-  if (view.books) jobs.books = q.all(db, `SELECT b.*, u.name AS given_by_name FROM book_deliveries b LEFT JOIN users u ON u.id = b.given_by WHERE b.student_id = ? ORDER BY b.date DESC, b.id DESC`, id);
+  if (view.books || view.bookpay) jobs.books = q.all(db, `SELECT b.*, u.name AS given_by_name FROM book_deliveries b LEFT JOIN users u ON u.id = b.given_by WHERE b.student_id = ? ORDER BY b.date DESC, b.id DESC`, id);
   if (view.tuition) jobs.tuition = q.all(db, `SELECT p.*, u.name AS created_by_name FROM payments p LEFT JOIN users u ON u.id = p.created_by WHERE p.student_id = ? AND p.kind = '교육비' ORDER BY p.paid_date DESC, p.id DESC`, id);
   if (view.bookpay) jobs.bookpay = q.all(db, `SELECT p.*, u.name AS created_by_name FROM payments p LEFT JOIN users u ON u.id = p.created_by WHERE p.student_id = ? AND p.kind = '교재비' ORDER BY p.paid_date DESC, p.id DESC`, id);
 
@@ -419,7 +444,19 @@ route('GET', '/api/students/:id', async ({ db, user, params }) => {
     return o;
   });
   if (view.fees) out.monthly_fee = out.courses.filter((c) => c.active).reduce((a, c) => a + (c.fee || 0), 0);
-  if (view.tuition) out.tuition_paid_this_month = out.tuition.some((p) => p.month === month);
+  if (view.tuition) {
+    out.tuition_paid_this_month = out.tuition.some((p) => p.month === month);
+    if (view.fees) out.tuition_status = tuitionStatus(out.monthly_fee, out.tuition.filter((p) => p.month === month).reduce((a, p) => a + p.amount, 0));
+    // 달마다 합계 (나눠 낸 경우를 한 줄로)
+    const byMonth = {};
+    for (const p of out.tuition) if (p.month) (byMonth[p.month] = byMonth[p.month] || { month: p.month, paid: 0, count: 0 }), (byMonth[p.month].paid += p.amount), byMonth[p.month].count++;
+    out.tuition_months = Object.values(byMonth).sort((a, b) => b.month.localeCompare(a.month));
+  }
+  if (view.bookpay) {
+    const total = (out.books || []).reduce((a, b) => a + (b.price || 0) * b.qty, 0);
+    const paid = out.bookpay.reduce((a, p) => a + p.amount, 0);
+    out.book_status = { total, paid, due: Math.max(0, total - paid), over: Math.max(0, paid - total) };
+  }
   if (!view.parents) out.messages = out.messages.map((m) => ({ ...m, to_phone: maskPhone(m.to_phone) }));
 
   return { student, view, month, ...out };
@@ -451,25 +488,95 @@ route(
   OM
 );
 
-// 여러 명 한꺼번에 등록: 한 줄에 한 명, "이름, 학교, 학년, 어머니 연락처, 아버지 연락처"
+// 여러 명 한꺼번에 등록
+// 엑셀에서 제목 줄까지 복사해 붙여 넣으면 제목을 보고 칸을 맞춥니다 (순서 상관없음).
+// 제목 줄이 없으면 "이름, 학교, 학년, 어머니 연락처, 아버지 연락처" 순서로 읽습니다.
+const BULK_LABELS = {
+  name: '이름', school: '학교', grade: '학년', birth_date: '생년월일', address: '주소', student_phone: '학생 연락처',
+  father_name: '아버지 성함', father_phone: '아버지 연락처', mother_name: '어머니 성함', mother_phone: '어머니 연락처',
+  sms_target: '문자 받을 분', enrolled_date: '등록일', sibling_note: '형제·자매 메모', memo: '특이사항',
+};
+function bulkField(header) {
+  const n = String(header || '').replace(/[\s()·._\-\/]/g, '');
+  if (!n) return null;
+  const tel = /(연락처|전화|휴대|핸드폰|번호|폰)/;
+  if (/(학생|본인)/.test(n) && tel.test(n)) return 'student_phone';
+  if (/(학부모|보호자|부모)/.test(n)) return tel.test(n) ? 'mother_phone' : 'mother_name';
+  if (/(아버지|부친|아빠|^부)/.test(n)) return tel.test(n) ? 'father_phone' : 'father_name';
+  if (/(어머니|모친|엄마|^모)/.test(n)) return tel.test(n) ? 'mother_phone' : 'mother_name';
+  if (/문자/.test(n)) return 'sms_target';
+  if (/(생년월일|생일|출생)/.test(n)) return 'birth_date';
+  if (/(등록일|입학일|입원일|등록날짜)/.test(n)) return 'enrolled_date';
+  if (/주소/.test(n)) return 'address';
+  if (/학교/.test(n)) return 'school';
+  if (/학년/.test(n)) return 'grade';
+  if (/(형제|자매|남매)/.test(n)) return 'sibling_note';
+  if (/(메모|특이|비고)/.test(n)) return 'memo';
+  if (/(이름|성명|학생명|^학생$)/.test(n)) return 'name';
+  if (tel.test(n)) return 'mother_phone';
+  return null;
+}
+// 2012.5.14 / 2012-05-14 / 20120514 / 2012년 5월 14일 → 2012-05-14
+function toDate(v) {
+  const sraw = String(v || '').trim();
+  if (!sraw) return { value: null };
+  let m = sraw.match(/^(\d{4})\D+(\d{1,2})\D+(\d{1,2})/) || sraw.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (!m) return { value: null, bad: true };
+  const d = `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  const ok = !isNaN(new Date(d + 'T00:00:00Z')) && Number(m[2]) <= 12 && Number(m[3]) <= 31;
+  return ok ? { value: d } : { value: null, bad: true };
+}
+function parseBulk(text) {
+  const lines = String(text || '').split(/\r?\n/).filter((l) => l.trim());
+  if (!lines.length) fail(400, '등록할 학생을 붙여 넣어 주세요');
+  const split = (l) => (l.includes('\t') ? l.split('\t') : l.split(',')).map((x) => x.trim());
+  const first = split(lines[0]);
+  const mapped = first.map(bulkField);
+  const hasHeader = mapped.includes('name');
+  const columns = hasHeader
+    ? first.map((hd, i) => ({ header: hd, field: mapped[i], label: mapped[i] ? BULK_LABELS[mapped[i]] : null }))
+    : ['name', 'school', 'grade', 'mother_phone', 'father_phone'].map((f) => ({ header: BULK_LABELS[f], field: f, label: BULK_LABELS[f] }));
+  const body = hasHeader ? lines.slice(1) : lines;
+  if (body.length > 300) fail(400, '한 번에 300명까지 등록할 수 있어요');
+  const warnings = [];
+  const rows = [];
+  body.forEach((l, idx) => {
+    const cells = split(l);
+    const r = {};
+    columns.forEach((c, i) => {
+      if (!c.field || cells[i] == null || cells[i] === '') return;
+      if (r[c.field] != null) return; // 같은 칸이 두 번 나오면 앞의 것을 씁니다
+      r[c.field] = cells[i];
+    });
+    const lineNo = idx + (hasHeader ? 2 : 1);
+    if (!clean(r.name)) { warnings.push(`${lineNo}번째 줄: 이름이 없어서 건너뛰어요`); return; }
+    const out = { name: clean(r.name) };
+    for (const f of ['school', 'grade', 'address', 'father_name', 'mother_name', 'sibling_note', 'memo']) out[f] = clean(r[f]);
+    for (const f of ['student_phone', 'father_phone', 'mother_phone']) out[f] = phone(r[f]);
+    for (const f of ['birth_date', 'enrolled_date']) {
+      const d = toDate(r[f]);
+      out[f] = d.value;
+      if (d.bad) warnings.push(`${lineNo}번째 줄 ${out.name}: ${BULK_LABELS[f]} "${r[f]}"를 읽지 못해 비워 둬요`);
+    }
+    const t = String(r.sms_target || '');
+    out.sms_target = /둘|모두|양/.test(t) ? '둘 다' : /(아버지|부|아빠)/.test(t) ? '아버지' : '어머니';
+    if (!r.sms_target && !out.mother_phone && out.father_phone) out.sms_target = '아버지';
+    rows.push(out);
+  });
+  return { hasHeader, columns: columns.map((c) => ({ header: c.header, label: c.label })), rows, warnings };
+}
+const BULK_FIELDS = ['name', 'school', 'grade', 'birth_date', 'address', 'student_phone', 'father_name', 'father_phone', 'mother_name', 'mother_phone', 'sms_target', 'enrolled_date', 'sibling_note', 'memo'];
+
 route(
   'POST',
   '/api/students/bulk',
   async ({ db, body }) => {
-    const lines = String(body.text || '')
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-    if (!lines.length) fail(400, '등록할 학생을 한 줄에 한 명씩 적어 주세요');
-    if (lines.length > 300) fail(400, '한 번에 300명까지 등록할 수 있어요');
+    const parsed = parseBulk(body.text);
+    if (body.preview) return { ok: true, preview: true, ...parsed, total: parsed.rows.length, rows: parsed.rows.slice(0, 8) };
+    if (!parsed.rows.length) fail(400, '등록할 학생이 없어요. 이름 칸을 확인해 주세요');
     const t = today();
-    const stmts = lines.map((l) => {
-      const [name, school, grade, mom, dad] = l.split(/\t|,/).map((x) => x.trim());
-      if (!name) fail(400, `이름이 없는 줄이 있어요: "${l}"`);
-      return db.prepare('INSERT INTO students (name, school, grade, mother_phone, father_phone, enrolled_date) VALUES (?, ?, ?, ?, ?, ?)').bind(name, clean(school), clean(grade), phone(mom), phone(dad), t);
-    });
-    await db.batch(stmts);
-    return { ok: true, added: stmts.length };
+    await db.batch(parsed.rows.map((r) => db.prepare(`INSERT INTO students (${BULK_FIELDS.join(',')}) VALUES (${BULK_FIELDS.map(() => '?').join(',')})`).bind(...BULK_FIELDS.map((f) => (f === 'enrolled_date' ? r[f] || t : r[f] ?? null)))));
+    return { ok: true, added: parsed.rows.length, warnings: parsed.warnings };
   },
   OM
 );
@@ -809,6 +916,167 @@ route('POST', '/api/attendance', async ({ db, env, user, body }) => {
     saved: stmts.length,
     messages: toNotify.map((m, i) => ({ student_id: m.student_id, text: m.text, to: seesAll(user) ? m.to : maskPhone(m.to), ...results[i] })),
   };
+});
+
+// ───────── 영주사랑(지역화폐) 결제 대조 ─────────
+// 결제자 "최*희(2650)" = 학부모 이름 첫·끝 글자 + 핸드폰 뒷자리 4개
+// 메모에 학생 이름이 있으면 그 학생으로 확정합니다.
+
+function parsePayer(raw) {
+  const t = String(raw || '').trim();
+  const m = t.match(/^(.*?)\s*\((\d{4})\)\s*$/);
+  const mask = (m ? m[1] : t).trim();
+  const last4 = m ? m[2] : (t.match(/(\d{4})\D*$/) || [])[1] || null;
+  let re = null;
+  if (mask) {
+    const src = mask.split('').map((ch) => (ch === '*' ? '.*' : ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))).join('');
+    try { re = new RegExp('^' + src + '$'); } catch {}
+  }
+  return { mask, last4, re };
+}
+const won0 = (v) => Number(String(v ?? '').replace(/[^0-9.-]/g, '')) || 0;
+function payDate(v) {
+  const t = String(v || '').trim();
+  const m = t.match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  return m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : null;
+}
+const payRef = (r) => `ys|${String(r.date || '').trim()}|${String(r.payer || '').trim()}|${won0(r.amount)}`;
+
+route('POST', '/api/payments/import/preview', async ({ db, body }) => {
+  const input = (body.rows || []).slice(0, 1000);
+  if (!input.length) fail(400, '결제 내역이 없어요');
+  const students = await q.all(
+    db,
+    `SELECT s.id, s.name, s.school, s.grade, s.status, s.family_id, s.mother_name, s.mother_phone, s.father_name, s.father_phone,
+      (SELECT IFNULL(SUM(IFNULL(e.fee, c.fee)), 0) FROM enrollments e JOIN courses c ON c.id = e.course_id WHERE e.student_id = s.id AND c.active = 1) AS fee_month,
+      (SELECT IFNULL(SUM(IFNULL(b.price, 0) * b.qty), 0) FROM book_deliveries b WHERE b.student_id = s.id) AS book_total,
+      (SELECT IFNULL(SUM(p.amount), 0) FROM payments p WHERE p.student_id = s.id AND p.kind = '교재비') AS book_paid
+     FROM students s`
+  );
+  const paidRows = await q.all(db, `SELECT student_id, month, SUM(amount) AS paid FROM payments WHERE kind = '교육비' AND month IS NOT NULL GROUP BY student_id, month`);
+  const paidOf = new Map(paidRows.map((r) => [`${r.student_id}|${r.month}`, r.paid]));
+  const refs = new Set((await q.all(db, `SELECT ref FROM payments WHERE ref LIKE 'ys|%'`)).map((r) => r.ref.replace(/#\d+$/, '')));
+  const last4 = (p) => (p ? String(p).slice(-4) : null);
+
+  const rows = input.map((r, i) => {
+    const date = payDate(r.date);
+    const amount = won0(r.amount);
+    const ref = payRef(r);
+    const payer = parsePayer(r.payer);
+    const memo = clean(r.memo) || '';
+    const cancelled = /취소|환불|실패/.test(String(r.status || ''));
+    // 메모의 "2월" → 그 달 교육비
+    let month = date ? date.slice(0, 7) : today().slice(0, 7);
+    const mm = memo.match(/(\d{1,2})\s*월/);
+    if (mm && date && Number(mm[1]) >= 1 && Number(mm[1]) <= 12) {
+      let y = Number(date.slice(0, 4));
+      const want = Number(mm[1]), have = Number(date.slice(5, 7));
+      if (want - have > 6) y--; else if (have - want > 6) y++;
+      month = `${y}-${String(want).padStart(2, '0')}`;
+    }
+    const cands = [];
+    for (const s of students) {
+      let score = 0;
+      const why = [];
+      if (memo && s.name && memo.includes(s.name)) (score += 6), why.push('메모에 학생 이름');
+      for (const [who, nm, ph] of [['어머니', s.mother_name, s.mother_phone], ['아버지', s.father_name, s.father_phone]]) {
+        const phoneHit = payer.last4 && last4(ph) === payer.last4;
+        const nameHit = payer.re && nm && payer.re.test(nm);
+        if (phoneHit && nameHit) (score += 5), why.push(`${who} ${nm}·뒷자리 일치`);
+        else if (phoneHit) (score += 3), why.push(`${who} 뒷자리 일치`);
+        else if (nameHit && payer.mask.length >= 2) (score += 1), why.push(`${who} 이름 비슷함`);
+      }
+      if (score < 2) continue;
+      const paidNow = paidOf.get(`${s.id}|${month}`) || 0;
+      const bookDue = Math.max(0, s.book_total - s.book_paid);
+      cands.push({
+        student_id: s.id, name: s.name, school: s.school, grade: s.grade, status: s.status, family_id: s.family_id,
+        score, why: why.join(', '), fee: s.fee_month, paid: paidNow, book_due: bookDue,
+      });
+    }
+    cands.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+    const top = cands[0];
+    const tied = top ? cands.filter((c) => c.score === top.score) : [];
+    let state = 'none';
+    if (cancelled) state = 'cancelled';
+    else if (refs.has(ref)) state = 'done';
+    else if (top && tied.length === 1 && top.score >= 5) state = 'sure';
+    else if (top && top.score >= 3) state = 'check';
+    // 교재비 추천: 메모에 "교재" 또는 금액이 교재비 미납과 같을 때
+    let kind = '교육비';
+    if (top && (/교재|책/.test(memo) || (top.book_due > 0 && amount === top.book_due))) kind = '교재비';
+    return {
+      i, ref, date, time: String(r.date || '').slice(11, 16), payer: String(r.payer || ''), method_raw: String(r.method || ''),
+      method: /카드/.test(String(r.method || '')) ? '카드' : '지역화폐', amount, memo, month, state, kind,
+      student_id: state === 'sure' || state === 'check' ? top.student_id : null,
+      siblings: tied.length > 1,
+      candidates: cands.slice(0, 6),
+    };
+  });
+  return { rows };
+}, OWNER);
+
+route('POST', '/api/payments/import', async ({ db, user, body }) => {
+  const items = (body.items || []).slice(0, 2000);
+  if (!items.length) fail(400, '기록할 결제를 골라 주세요');
+  const exist = new Set((await q.all(db, `SELECT ref FROM payments WHERE ref LIKE 'ys|%'`)).map((r) => r.ref));
+  const ids = new Set((await q.all(db, 'SELECT id FROM students')).map((r) => r.id));
+  const stmts = [];
+  let skipped = 0;
+  for (const it of items) {
+    const ref = String(it.ref || '');
+    if (!ref.startsWith('ys|') || exist.has(ref) || !ids.has(Number(it.student_id))) { skipped++; continue; }
+    const kind = it.kind === '교재비' ? '교재비' : '교육비';
+    const month = /^\d{4}-\d{2}$/.test(it.month || '') ? it.month : null;
+    if (kind === '교육비' && !month) { skipped++; continue; }
+    const amount = won0(it.amount);
+    if (amount <= 0) { skipped++; continue; }
+    exist.add(ref);
+    stmts.push(
+      db.prepare('INSERT INTO payments (student_id, kind, month, amount, paid_date, method, memo, created_by, ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .bind(Number(it.student_id), kind, kind === '교육비' ? month : null, amount, isDate(it.paid_date) ? it.paid_date : today(), it.method === '카드' ? '카드' : '지역화폐', clean(it.memo), user.id, ref)
+    );
+  }
+  if (stmts.length) await db.batch(stmts);
+  return { ok: true, added: stmts.length, skipped };
+}, OWNER);
+
+// ───────── 수업 일지 ─────────
+// 반·날짜마다 한 장: 수업 내용(진도), 숙제, 학생별 메모(학부모에게 가지 않음)
+
+route('GET', '/api/classlog', async ({ db, user, query }) => {
+  const course = await mustSeeCourse(db, user, Number(query.course_id));
+  const date = isDate(query.date) ? query.date : today();
+  const log = await q.first(db, `SELECT l.*, u.name AS teacher_name FROM class_logs l LEFT JOIN users u ON u.id = l.teacher_id WHERE l.course_id = ? AND l.date = ?`, course.id, date);
+  const notes = log ? await q.all(db, 'SELECT student_id, note FROM class_log_notes WHERE log_id = ?', log.id) : [];
+  const recent = await q.all(db, `SELECT date, content, homework FROM class_logs WHERE course_id = ? AND date < ? ORDER BY date DESC LIMIT 3`, course.id, date);
+  return { log, notes, recent };
+});
+
+route('PUT', '/api/classlog', async ({ db, user, body }) => {
+  const course = await mustSeeCourse(db, user, Number(body.course_id));
+  const date = isDate(body.date) ? body.date : today();
+  const content = clean(body.content);
+  const homework = clean(body.homework);
+  const notes = (body.notes || []).map((n) => ({ sid: Number(n.student_id), note: clean(n.note) }));
+  if (!content && !homework && !notes.some((n) => n.note)) fail(400, '수업 내용이나 숙제를 적어 주세요');
+  await q.run(
+    db,
+    `INSERT INTO class_logs (course_id, date, teacher_id, content, homework, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT (course_id, date) DO UPDATE SET teacher_id = excluded.teacher_id, content = excluded.content, homework = excluded.homework, updated_at = excluded.updated_at`,
+    course.id, date, user.id, content, homework
+  );
+  const log = await q.first(db, 'SELECT id FROM class_logs WHERE course_id = ? AND date = ?', course.id, date);
+  const enrolled = new Set((await q.all(db, 'SELECT student_id FROM enrollments WHERE course_id = ?', course.id)).map((r) => r.student_id));
+  const stmts = [];
+  for (const n of notes) {
+    if (!enrolled.has(n.sid)) continue;
+    stmts.push(n.note
+      ? db.prepare('INSERT INTO class_log_notes (log_id, student_id, note) VALUES (?, ?, ?) ON CONFLICT (log_id, student_id) DO UPDATE SET note = excluded.note').bind(log.id, n.sid, n.note)
+      : db.prepare('DELETE FROM class_log_notes WHERE log_id = ? AND student_id = ?').bind(log.id, n.sid));
+  }
+  if (stmts.length) await db.batch(stmts);
+  return { ok: true, id: log.id };
 });
 
 // ───────── 피드백 기간 ─────────

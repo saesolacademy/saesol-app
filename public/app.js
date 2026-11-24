@@ -216,8 +216,8 @@
   // ───────── 메뉴 ─────────
   const NAV = [
     { group: null, items: [['', '🏠', '대시보드']] },
-    { group: '원장 전용', owner: true, items: [['teachers', '👥', '선생님 계정'], ['courses', '🗂️', '반 관리'], ['periods', '🗓️', '피드백 기간'], ['settings', '⚙️', '설정']] },
-    { group: '학생 관리', items: [['attendance', '✅', '출결 알림'], ['feedback', '📝', '피드백 작성'], ['risks', '🚨', '이탈 신호 관리'], ['messages', '📨', '피드백·문자 발송 기록'], ['consultations', '💬', '상담 정리']] },
+    { group: '원장 전용', owner: true, items: [['teachers', '👥', '선생님 계정'], ['courses', '🗂️', '반 관리'], ['periods', '🗓️', '피드백 기간'], ['payimport', '💳', '영주사랑 결제 대조'], ['settings', '⚙️', '설정']] },
+    { group: '학생 관리', items: [['attendance', '✅', '출결·수업 일지'], ['feedback', '📝', '피드백 작성'], ['risks', '🚨', '이탈 신호 관리'], ['messages', '📨', '피드백·문자 발송 기록'], ['consultations', '💬', '상담 정리']] },
     { group: '기본 정보', items: [['students', '🎒', '학생 명부'], ['courses', '🗂️', '반 학생 넣기', 'manager']] },
   ];
 
@@ -344,7 +344,7 @@
     const others = all.courses.filter((c) => !todayData.courses.some((t) => t.id === c.id));
 
     el.innerHTML = `
-      <div class="page-head"><div><h1>출결 알림</h1><p>출결을 체크하면 지각·결석·조퇴는 학부모님께 바로 문자가 가요.</p></div>
+      <div class="page-head"><div><h1>출결·수업 일지</h1><p>출결을 체크하면 지각·결석·조퇴는 학부모님께 바로 문자가 가요. 아래에 그날 수업 일지도 적어 주세요.</p></div>
         <div class="row"><input type="date" id="date" value="${h(date)}" style="width:auto"></div></div>
       <div class="card">
         <h2>${prettyDate(date)} 수업</h2>
@@ -355,13 +355,47 @@
           : '<div class="muted">이 날짜에 잡힌 수업이 없어요.</div>'}
         ${others.length ? `<div class="row mt"><span class="small muted">다른 반 고르기</span><select id="other" style="width:auto"><option value="">선택</option>${others.map((c) => `<option value="${c.id}" ${c.id === courseId ? 'selected' : ''}>${h(c.name)}</option>`).join('')}</select></div>` : ''}
       </div>
-      <div id="sheet"></div>`;
+      <div id="sheet"></div>
+      <div id="logbox"></div>`;
 
     const go = (cid, dt = date) => (location.hash = `#/attendance?date=${dt}${cid ? `&course=${cid}` : ''}`);
     $('#date').onchange = (e) => go(null, e.target.value);
     $$('[data-course]', el).forEach((b) => (b.onclick = () => go(b.dataset.course)));
     if ($('#other')) $('#other').onchange = (e) => e.target.value && go(e.target.value);
-    if (courseId) await renderSheet($('#sheet'), courseId, date);
+    if (courseId) {
+      await renderSheet($('#sheet'), courseId, date);
+      await renderLog($('#logbox'), courseId, date);
+    }
+  }
+
+  // ───────── 수업 일지 ─────────
+  async function renderLog(box, courseId, date) {
+    const [{ log, notes, recent }, att] = await Promise.all([api('GET', `/api/classlog?course_id=${courseId}&date=${date}`), api('GET', `/api/attendance?course_id=${courseId}&date=${date}`)]);
+    const noteOf = new Map(notes.map((n) => [n.student_id, n.note]));
+    box.innerHTML = `
+      <div class="card mt">
+        <div class="row"><h2 style="margin:0">📘 ${prettyDate(date)} 수업 일지</h2><span class="space"></span>${log ? `<span class="small muted">${h(log.teacher_name || '')} · ${prettyTime(log.updated_at)} 저장</span>` : '<span class="chip">아직 안 씀</span>'}</div>
+        <form id="logf" class="mt">
+          <label class="field"><span>수업 내용 · 진도</span><textarea name="content" placeholder="예: 일차함수 그래프 그리기, 교재 p.38~44">${h(log ? log.content || '' : '')}</textarea></label>
+          <label class="field"><span>숙제</span><input type="text" name="homework" value="${h(log ? log.homework || '' : '')}" placeholder="예: 쎈 p.45~50"></label>
+          ${att.rows.length ? `<div class="field"><span class="small muted">학생별 메모 (선생님들끼리만 봐요 · 학부모 문자로 나가지 않아요)</span>
+            <table class="list">${att.rows.map((r) => `<tr><td style="width:150px"><div class="row" style="flex-wrap:nowrap">${sAvatar({ id: r.student_id, name: r.name, photo_v: r.photo_v }, 26)}<b>${h(r.name)}</b></div></td>
+              <td style="width:70px">${r.status ? statusChip(r.status) : ''}</td>
+              <td><input type="text" name="note_${r.student_id}" value="${h(noteOf.get(r.student_id) || '')}" placeholder="예: 숙제 안 해 옴, 질문 많이 함"></td></tr>`).join('')}</table></div>` : ''}
+          <div class="row"><span class="space"></span><button class="btn primary">일지 저장</button></div>
+        </form>
+        ${recent.length ? `<div class="small muted mt"><b>지난 수업</b>${recent.map((x) => `<div style="margin-top:4px">${prettyDate(x.date)} — ${h(x.content || '')}${x.homework ? ` · 숙제: ${h(x.homework)}` : ''}</div>`).join('')}</div>` : ''}
+      </div>`;
+    $('#logf', box).onsubmit = async (e) => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      const notesBody = att.rows.map((r) => ({ student_id: r.student_id, note: f['note_' + r.student_id] || '' }));
+      try {
+        await api('PUT', '/api/classlog', { course_id: courseId, date, content: f.content, homework: f.homework, notes: notesBody });
+        toast('수업 일지를 저장했어요');
+        renderLog(box, courseId, date);
+      } catch (err) { toast(err.message); }
+    };
   }
 
   async function renderSheet(box, courseId, date) {
@@ -738,7 +772,11 @@
     if (parts[0]) return pageStudent(el, Number(parts[0]));
     const st = query.status ?? '재원';
     const qs = new URLSearchParams(Object.entries({ status: st, q: query.q }).filter(([, v]) => v)).toString();
-    const { students, view } = await api('GET', '/api/students' + (qs ? '?' + qs : ''));
+    const { students, view, month } = await api('GET', '/api/students' + (qs ? '?' + qs : ''));
+    const showT = students.some((x) => x.tuition), showB = view.bookpay;
+    const unpaid = (x) => (x.tuition && (x.tuition.state === '미납' || x.tuition.state === '부분')) || x.book_due > 0;
+    const list = query.unpaid ? students.filter(unpaid) : students;
+    const tChip = (t) => !t ? '' : t.state === '완납' ? '<span class="chip green">완납</span>' : t.state === '부분' ? `<span class="chip orange">${won(t.due)} 남음</span>` : t.state === '미납' ? '<span class="chip red">미납</span>' : '<span class="muted small">-</span>';
     const count = (k) => students.filter((s) => s.status === k).length;
     el.innerHTML = `
       <div class="page-head"><div><h1>학생 명부</h1><p>${isOwner() ? '학생을 누르면 인적사항·상담·교재·수납이 한 화면에 나와요.' : isManager() ? '학원 전체 학생이에요. 학생을 누르면 학생 카드가 열려요.' : '내 반 학생만 보여요. 학생을 누르면 학생 카드가 열려요.'}</p></div>
@@ -746,46 +784,91 @@
       <div class="card">
         <form class="row" id="filter">
           <div class="tabs">${[['재원', '재원생'], ['휴원', '휴원생'], ['퇴원', '퇴원생'], ['', '전체']].map(([v, l]) => `<button type="button" class="btn sm ${st === v ? 'primary' : ''}" data-st="${v}">${l}</button>`).join('')}</div>
+          ${showT || showB ? `<label class="inline-check small" style="margin-left:6px"><input type="checkbox" id="unpaid" ${query.unpaid ? 'checked' : ''}> 미납만 보기</label>` : ''}
           <span class="space"></span>
           <input type="search" name="q" placeholder="이름·학교 검색" value="${h(query.q || '')}" style="width:180px">
           <button class="btn">찾기</button>
         </form>
         <div class="table-wrap mt"><table class="list">
-          <thead><tr><th></th><th>이름</th><th>학교·학년</th>${view.birth ? '<th>생년월일</th>' : ''}<th>수강</th>${view.parents ? '<th>어머니 / 아버지</th>' : ''}<th>상태</th></tr></thead>
-          <tbody>${students.map((s) => `<tr class="click" data-id="${s.id}">
+          <thead><tr><th></th><th>이름</th><th>학교·학년</th>${view.birth ? '<th>생년월일</th>' : ''}<th>수강</th>${view.parents ? '<th>어머니 / 아버지</th>' : ''}${showT ? `<th>${Number(month.slice(5))}월 교육비</th>` : ''}${showB ? '<th>교재비</th>' : ''}<th>상태</th></tr></thead>
+          <tbody>${list.map((s) => `<tr class="click" data-id="${s.id}">
             <td style="width:44px">${sAvatar(s, 34)}</td>
             <td><b>${h(s.name)}</b>${s.sibling_count ? ` <span class="chip gold" title="형제·자매가 함께 다녀요">형제 ${s.sibling_count}</span>` : ''}</td>
             <td>${h(s.school || '')} ${h(s.grade || '')}</td>
             ${view.birth ? `<td class="small">${h(s.birth_date || '')}</td>` : ''}
             <td class="small">${h(s.courses || '-')}</td>
             ${view.parents ? `<td class="small">${h(fmtPhone(s.mother_phone)) || '-'}<br>${h(fmtPhone(s.father_phone)) || '-'}</td>` : ''}
+            ${showT ? `<td>${tChip(s.tuition)}</td>` : ''}
+            ${showB ? `<td>${s.book_due ? `<span class="chip red">${won(s.book_due)} 미납</span>` : s.book_total ? '<span class="chip green">정산</span>' : '<span class="muted small">-</span>'}</td>` : ''}
             <td>${statusChip(s.status)}${s.has_phone ? '' : ' <span class="chip red">번호 없음</span>'}</td></tr>`).join('')}</tbody>
         </table></div>
-        ${students.length ? `<div class="small muted mt">${students.length}명${st === '' ? ` (재원 ${count('재원')} · 휴원 ${count('휴원')} · 퇴원 ${count('퇴원')})` : ''}</div>` : '<div class="empty">학생이 없어요</div>'}
+        ${list.length ? `<div class="small muted mt">${list.length}명${query.unpaid ? ' (미납만)' : ''}${st === '' ? ` (재원 ${count('재원')} · 휴원 ${count('휴원')} · 퇴원 ${count('퇴원')})` : ''}</div>` : '<div class="empty">학생이 없어요</div>'}
       </div>`;
     const go = (patch) => {
-      const q = { status: st, q: query.q, ...patch };
+      const q = { status: st, q: query.q, unpaid: query.unpaid, ...patch };
       location.hash = '#/students?' + new URLSearchParams(Object.entries(q).map(([k, v]) => [k, v ?? ''])).toString();
     };
     $$('[data-st]', el).forEach((b) => (b.onclick = () => go({ status: b.dataset.st })));
+    if ($('#unpaid')) $('#unpaid').onchange = (e) => go({ unpaid: e.target.checked ? '1' : '' });
     $('#filter').onsubmit = (e) => { e.preventDefault(); go({ q: new FormData(e.target).get('q') }); };
     $$('tr[data-id]', el).forEach((tr) => (tr.onclick = () => (location.hash = `#/students/${tr.dataset.id}`)));
     if (!canEditStudents()) return;
     $('#add').onclick = () => modal({ title: '학생 등록', wide: true, body: studentForm({ status: '재원' }), onSubmit: async (d) => { const r = await api('POST', '/api/students', d); toast('등록했어요'); location.hash = `#/students/${r.id}`; } });
-    $('#bulk').onclick = () => modal({
-      title: '여러 명 한꺼번에 추가', wide: true, submitText: '등록하기',
-      body: `<p class="small muted" style="margin-top:0">한 줄에 한 명씩, <b>이름, 학교, 학년, 어머니 연락처, 아버지 연락처</b> 순서로 적어 주세요. 엑셀에서 칸을 그대로 복사해 붙여 넣어도 돼요. 나머지 정보는 학생 카드에서 채우면 돼요.</p>
-             <textarea name="text" style="min-height:220px" placeholder="홍길동, 대치중, 중2, 010-1234-5678, 010-2345-6789&#10;김영희, 대치고, 고1, 010-2222-3333"></textarea>`,
-      onSubmit: async (d) => { const r = await api('POST', '/api/students/bulk', d); toast(`${r.added}명 등록했어요`); reload(); },
-    });
+    $('#bulk').onclick = () => {
+      let checked = null; // 미리 보기를 마친 글
+      modal({
+        title: '여러 명 한꺼번에 추가', wide: true, submitText: '미리 보기',
+        body: `
+          <div class="howto">
+            <b>엑셀에서 제목 줄까지 같이</b> 복사해서(Ctrl+C) 아래 칸에 붙여 넣어 주세요(Ctrl+V). 칸 순서는 상관없어요. 제목을 보고 알아서 맞춰요.
+            <div class="small muted" style="margin-top:6px">알아듣는 제목: 이름 · 학교 · 학년 · 생년월일 · 주소 · 학생 연락처 · 아버지 성함 · 아버지 연락처 · 어머니 성함 · 어머니 연락처 · 문자 받을 분(어머니/아버지/둘 다) · 등록일 · 형제 · 특이사항</div>
+            <a class="btn sm" href="/student-template.csv" download="학생등록양식.csv" style="margin-top:8px">⬇ 엑셀 양식 내려받기</a>
+          </div>
+          <textarea name="text" style="min-height:200px;font-family:inherit" placeholder="이름	학교	학년	생년월일	주소	어머니 성함	어머니 연락처	아버지 성함	아버지 연락처&#10;홍길동	대치중	중2	2012-05-14	서울 강남구 …	김영희	010-1234-5678	홍판서	010-2345-6789"></textarea>
+          <div id="bulkPreview"></div>`,
+        onOpen: (f) => { $('textarea', f).oninput = () => { checked = null; $('button[type=submit]', f).textContent = '미리 보기'; $('#bulkPreview', f).innerHTML = ''; }; },
+        onSubmit: async (d, f) => {
+          if (checked !== d.text) {
+            const p = await api('POST', '/api/students/bulk', { text: d.text, preview: true });
+            const cols = ['name', 'school', 'grade', 'birth_date', 'address', 'mother_name', 'mother_phone', 'father_name', 'father_phone', 'sms_target'];
+            const label = { name: '이름', school: '학교', grade: '학년', birth_date: '생년월일', address: '주소', mother_name: '어머니', mother_phone: '어머니 연락처', father_name: '아버지', father_phone: '아버지 연락처', sms_target: '문자' };
+            const used = cols.filter((c) => p.rows.some((r) => r[c]));
+            const ignored = p.columns.filter((c) => !c.label).map((c) => c.header).filter(Boolean);
+            $('#bulkPreview', f).innerHTML = `
+              <div class="mt"><b>미리 보기</b> — 모두 <b>${p.total}명</b>${p.total > p.rows.length ? ` (앞의 ${p.rows.length}명만 보여요)` : ''}${p.hasHeader ? '' : ' · <span style="color:var(--orange)">제목 줄이 없어서 "이름, 학교, 학년, 어머니 연락처, 아버지 연락처" 순서로 읽었어요</span>'}</div>
+              ${p.hasHeader ? `<div class="small muted">칸 맞춤: ${p.columns.filter((c) => c.label).map((c) => `${h(c.header)} → <b>${h(c.label)}</b>`).join(' · ')}</div>` : ''}
+              ${ignored.length ? `<div class="small" style="color:var(--orange)">읽지 않은 칸: ${ignored.map(h).join(', ')}</div>` : ''}
+              <div class="table-wrap" style="margin-top:6px"><table class="list"><thead><tr>${used.map((c) => `<th>${label[c]}</th>`).join('')}</tr></thead>
+              <tbody>${p.rows.map((r) => `<tr>${used.map((c) => `<td class="small">${h(c.endsWith('phone') ? fmtPhone(r[c]) : r[c] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+              ${p.warnings.length ? `<div class="small" style="color:var(--orange);margin-top:6px">${p.warnings.map(h).join('<br>')}</div>` : ''}
+              <div class="small muted" style="margin-top:6px">칸이 잘 맞았으면 <b>이대로 등록하기</b>를 눌러 주세요. 틀렸으면 엑셀 제목을 고쳐서 다시 붙여 넣어 주세요.</div>`;
+            checked = d.text;
+            $('button[type=submit]', f).textContent = `이대로 ${p.total}명 등록하기`;
+            return true; // 창을 닫지 않아요
+          }
+          const r = await api('POST', '/api/students/bulk', { text: d.text });
+          toast(`${r.added}명 등록했어요`);
+          reload();
+        },
+      });
+    };
   }
 
   async function pageStudent(el, id) {
     const d = await api('GET', `/api/students/${id}`);
     const s = d.student, v = d.view, own = isOwner(), edit = canEditStudents();
-    const absent = d.attendance.filter((a) => a.status === '결석').length;
-    const late = d.attendance.filter((a) => a.status === '지각' || a.status === '조퇴').length;
-    const subjects = [...new Set(d.consultations.map((k) => k.subject || '공통'))];
+    const tz = todayStr();
+    const since30 = (() => { const t = new Date(); t.setDate(t.getDate() - 30); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; })();
+    const att30 = d.attendance.filter((a) => a.date >= since30);
+    const absent30 = att30.filter((a) => a.status === '결석').length;
+    const late30 = att30.filter((a) => a.status === '지각' || a.status === '조퇴').length;
+    const rate = att30.length ? Math.round(((att30.length - absent30) / att30.length) * 100) : null;
+    const pendingFollow = d.consultations.filter((k) => k.follow_up && !k.follow_up_done);
+    const openFlags = d.flags.filter((f) => !f.resolved);
+    const lastLog = d.logs[0];
+    const mm = Number(d.month.slice(5));
+    const ts = d.tuition_status, bs = d.book_status;
+
     const info = [
       v.birth && ['생년월일', s.birth_date ? `${h(s.birth_date)} <span class="muted small">(${ageOf(s.birth_date)})</span>` : '-'],
       ['학교·학년', `${h(s.school || '-')} ${h(s.grade || '')}`],
@@ -798,19 +881,60 @@
       v.memo && ['특이사항', `<span style="white-space:pre-wrap">${h(s.memo || '-')}</span>`],
     ].filter(Boolean);
 
+    // ── 타임라인: 모든 기록을 날짜순으로
+    const tl = [];
+    for (const k of d.consultations) tl.push({ type: '상담', date: k.date, subject: k.subject || '공통', html: `
+      <div class="row"><span class="chip">${h(k.kind)}</span>${withAvatar(k.teacher_id, k.teacher_photo_v, k.teacher_name, 20)}</div>
+      <div class="content">${h(k.content)}</div>${k.follow_up ? `<div class="follow ${k.follow_up_done ? 'done' : ''}">📌 ${h(k.follow_up)}</div>` : ''}` });
+    for (const l of d.logs) tl.push({ type: '수업 일지', date: l.date, subject: l.subject, html: `
+      <div class="row"><b>${h(l.course_name)}</b>${l.att_status ? statusChip(l.att_status) : ''}${withAvatar(l.teacher_id, l.teacher_photo_v, l.teacher_name, 20)}</div>
+      ${l.content ? `<div class="content">📖 ${h(l.content)}</div>` : ''}${l.homework ? `<div class="content small">✏️ 숙제: ${h(l.homework)}</div>` : ''}${l.note ? `<div class="follow">🗒️ ${h(l.note)}</div>` : ''}` });
+    const logged = new Set(d.logs.map((l) => `${l.date}|${l.course_name}`));
+    for (const a of d.attendance) if (a.status !== '출석' && !logged.has(`${a.date}|${a.course_name}`)) tl.push({ type: '출결', date: a.date, subject: a.subject, html: `<div class="row">${statusChip(a.status)}<span>${h(a.course_name)}</span><span class="small muted">${h(a.memo || '')}</span></div>` });
+    for (const f of d.feedbacks) tl.push({ type: '피드백', date: (f.sent_at || f.updated_at || '').slice(0, 10), subject: f.subject, html: `<div class="row"><b>${h(f.period_title)}</b>${statusChip(f.status)}</div><div class="content small">${h(f.content)}</div>` });
+    for (const b of d.books || []) tl.push({ type: '교재', date: b.date, subject: b.subject || '공통', html: `<div class="row"><b>${h(b.title)}</b><span class="small muted">${b.qty}권 · ${won(b.price)} · ${h(b.given_by_name || '')}</span></div>` });
+    for (const p of [...(d.tuition || []), ...(d.bookpay || [])]) tl.push({ type: '수납', date: p.paid_date, subject: '공통', html: `<div class="row"><b>${h(p.kind)}</b>${p.month ? `<span class="small muted">${h(p.month)}분</span>` : ''}<b>${won(p.amount)}</b><span class="small muted">${h(p.method || '')} ${h(p.memo || '')}</span></div>` });
+    for (const f of d.flags) tl.push({ type: '걱정 표시', date: (f.created_at || '').slice(0, 10), subject: '공통', html: `<div class="row">${f.resolved ? '<span class="chip">해결됨</span>' : '<span class="chip red">진행 중</span>'}<b>${h(f.reason)}</b><span class="small muted">${h(f.created_by_name || '')}</span></div>${f.resolution ? `<div class="small muted">→ ${h(f.resolution)}</div>` : ''}` });
+    tl.sort((x, y) => (y.date || '').localeCompare(x.date || ''));
+    const ICON = { 상담: '💬', '수업 일지': '📘', 출결: '⏰', 피드백: '📝', 교재: '📚', 수납: '💳', '걱정 표시': '🚨' };
+    const types = Object.keys(ICON).filter((t) => tl.some((x) => x.type === t));
+    const tlSubjects = [...new Set(tl.map((x) => x.subject).filter((x) => x && x !== '공통'))];
+    let lastMonth = '';
+    const tlHtml = tl.map((x) => {
+      const m = (x.date || '').slice(0, 7);
+      const head = m !== lastMonth ? ((lastMonth = m), `<div class="tl-month" data-month>${m ? `${m.slice(0, 4)}년 ${Number(m.slice(5))}월` : '날짜 없음'}</div>`) : '';
+      return `${head}<div class="tl-item" data-type="${h(x.type)}" data-subject="${h(x.subject || '공통')}">
+        <div class="tl-date">${x.date ? prettyDate(x.date) : ''}</div>
+        <div class="tl-dot">${ICON[x.type]}</div>
+        <div class="tl-body"><div class="small muted">${h(x.type)}${x.subject && x.subject !== '공통' ? ' · ' + h(x.subject) : ''}</div>${x.html}</div></div>`;
+    }).join('');
+
+    const tile = (label, big, sub, tone = '') => `<div class="card stat ${tone}"><div class="label">${label}</div><div class="num" style="font-size:22px">${big}</div><div class="sub">${sub}</div></div>`;
+    const tiles = [
+      tile('✅ 최근 30일 출석', rate == null ? '-' : `${rate}<small>%</small>`, `결석 ${absent30} · 지각/조퇴 ${late30}`, absent30 >= 2 ? 'warn' : ''),
+      ts && tile(`💳 ${mm}월 교육비`, ts.state === '완납' ? '완납' : ts.state === '부분' ? `${won(ts.due)} 남음` : ts.state === '미납' ? '미납' : '-', ts.fee ? `${won(ts.fee)} 중 ${won(ts.paid)} 납부` : '수강료 미정', ts.state === '미납' || ts.state === '부분' ? 'warn' : ''),
+      bs && tile('📚 교재비', bs.due ? `${won(bs.due)} 미납` : '정산 완료', `배부 ${won(bs.total)} · 납부 ${won(bs.paid)}`, bs.due ? 'warn' : ''),
+      tile('💬 상담', d.consultations[0] ? prettyDate(d.consultations[0].date) : '없음', pendingFollow.length ? `📌 할 일 ${pendingFollow.length}건 남음` : `모두 ${d.consultations.length}건`),
+      tile('📘 최근 수업', lastLog ? prettyDate(lastLog.date) : '없음', lastLog ? h(lastLog.homework ? '숙제: ' + lastLog.homework : lastLog.course_name) : '수업 일지가 아직 없어요'),
+      tile('🚨 이탈 신호', openFlags.length ? `${openFlags.length}건` : '없음', openFlags.length ? h(openFlags[0].reason) : '걱정 표시 없음', openFlags.length ? 'warn' : ''),
+    ].filter(Boolean);
+
     const payTable = (list, kind) => list.length ? `<table class="list"><thead><tr>${kind === '교육비' ? '<th>해당 월</th>' : '<th>내용</th>'}<th>납부일</th><th>금액</th><th>방법</th>${own ? '<th></th>' : ''}</tr></thead><tbody>${list.map((p) => `
         <tr><td>${kind === '교육비' ? h(p.month) : h(p.memo || '-')}</td><td>${h(p.paid_date)}</td><td><b>${won(p.amount)}</b></td><td>${h(p.method || '')}${kind === '교육비' && p.memo ? `<div class="small muted">${h(p.memo)}</div>` : ''}</td>
-        ${own ? `<td style="text-align:right"><button class="btn sm danger" data-delpay="${p.id}">삭제</button></td>` : ''}</tr>`).join('')}</tbody></table>
-        <div class="small muted" style="margin-top:6px">합계 ${won(list.reduce((a, p) => a + p.amount, 0))}</div>` : '<div class="empty">수납 기록이 없어요</div>';
+        ${own ? `<td style="text-align:right"><button class="btn sm danger no-print" data-delpay="${p.id}">삭제</button></td>` : ''}</tr>`).join('')}</tbody></table>` : '<div class="empty">수납 기록이 없어요</div>';
+    const monthTable = (d.tuition_months || []).length ? `<table class="list" style="margin-bottom:10px"><thead><tr><th>달</th><th>납부 합계</th><th>상태</th></tr></thead><tbody>${d.tuition_months.map((m) => {
+        const fee = d.monthly_fee || 0;
+        const st = !fee ? '' : m.paid >= fee ? '<span class="chip green">완납</span>' : `<span class="chip orange">${won(fee - m.paid)} 남음</span>`;
+        return `<tr><td>${h(m.month)}</td><td><b>${won(m.paid)}</b>${m.count > 1 ? ` <span class="small muted">(${m.count}번 나눠 냄)</span>` : ''}</td><td>${st}</td></tr>`;
+      }).join('')}</tbody></table>` : '';
 
     el.innerHTML = `
       <div class="no-print"><a href="#/students" class="small muted">← 학생 명부</a></div>
       <div class="card profile mt">
         <div class="profile-photo" id="photoBtn" title="사진 바꾸기">${sAvatar(s, 104)}<span class="no-print">📷</span></div>
         <div class="profile-main">
-          <div class="row"><h1>${h(s.name)}</h1>${statusChip(s.status)}${d.siblings && d.siblings.length ? `<span class="chip gold">형제·자매 ${d.siblings.length}명 재원</span>` : ''}</div>
+          <div class="row"><h1>${h(s.name)}</h1>${statusChip(s.status)}${d.siblings && d.siblings.length ? `<span class="chip gold">형제·자매 ${d.siblings.length}명</span>` : ''}</div>
           <div class="muted">${h(s.school || '')} ${h(s.grade || '')}${v.birth && s.birth_date ? ` · ${ageOf(s.birth_date)}` : ''}${d.courses.length ? ` · ${d.courses.filter((c) => c.active).map((c) => h(c.subject)).join(', ')}` : ''}</div>
-          ${v.tuition ? `<div class="mt">${d.tuition_paid_this_month ? `<span class="chip green">${Number(d.month.slice(5))}월 교육비 납부</span>` : `<span class="chip red">${Number(d.month.slice(5))}월 교육비 미납</span>`}${v.fees && d.monthly_fee ? ` <span class="chip">월 수강료 ${won(d.monthly_fee)}</span>` : ''}</div>` : ''}
         </div>
         <div class="profile-actions no-print">
           <button class="btn" id="consult">💬 상담 기록</button>
@@ -819,6 +943,8 @@
           ${edit ? '<button class="btn primary" id="edit">인적사항 고치기</button>' : ''}
         </div>
       </div>
+
+      <div class="glance mt">${tiles.join('')}</div>
 
       <div class="grid g2 mt">
         <div class="card"><h2>인적사항</h2>
@@ -840,15 +966,21 @@
       </div>
 
       <div class="card mt">
-        <div class="row"><h2 style="margin:0">상담 기록 <span class="small muted">모든 선생님 기록 ${d.consultations.length}건</span></h2><span class="space"></span>
-          ${subjects.length > 1 ? `<div class="tabs no-print"><button class="btn sm primary" data-subj="">전체</button>${subjects.map((x) => `<button class="btn sm" data-subj="${h(x)}">${h(x)}</button>`).join('')}</div>` : ''}</div>
-        <div id="consults" class="mt">${d.consultations.length ? d.consultations.map((k) => `
-          <div class="item" data-subject="${h(k.subject || '공통')}">
-            <div class="row"><span class="chip green">${h(k.subject || '공통')}</span><span class="chip">${h(k.kind)}</span><span class="small muted">${prettyDate(k.date)}</span>${withAvatar(k.teacher_id, k.teacher_photo_v, k.teacher_name, 20)}</div>
-            <div class="content">${h(k.content)}</div>
-            ${k.follow_up ? `<div class="follow ${k.follow_up_done ? 'done' : ''}">📌 ${h(k.follow_up)}</div>` : ''}
-          </div>`).join('') : '<div class="empty">상담 기록이 없어요</div>'}</div>
+        <div class="row"><h2 style="margin:0">기록 타임라인 <span class="small muted">모든 선생님 기록 · 최근 것부터</span></h2></div>
+        ${tl.length ? `
+        <div class="tabs no-print mt">${['전체', ...types].map((t, i) => `<button class="btn sm ${i ? '' : 'primary'}" data-tltype="${i ? h(t) : ''}">${i ? ICON[t] + ' ' : ''}${h(t)} ${i ? tl.filter((x) => x.type === t).length : tl.length}</button>`).join('')}</div>
+        ${tlSubjects.length > 1 ? `<div class="tabs no-print" style="margin-top:6px"><button class="btn sm primary" data-tlsub="">모든 과목</button>${tlSubjects.map((x) => `<button class="btn sm" data-tlsub="${h(x)}">${h(x)}</button>`).join('')}</div>` : ''}
+        <div class="timeline mt" id="timeline">${tlHtml}</div>` : '<div class="empty">아직 기록이 없어요</div>'}
       </div>
+
+      ${v.tuition || v.bookpay ? `<div class="grid g2 mt">
+        ${v.tuition ? `<div class="card"><div class="row"><h2 style="margin:0">교육비</h2><span class="space"></span>${own ? '<button class="btn sm no-print" data-addpay="교육비">＋ 수납 기록</button>' : ''}</div>
+          ${ts && ts.fee ? `<div class="small mt">${mm}월: 수강료 ${won(ts.fee)} 중 <b>${won(ts.paid)}</b> 납부${ts.due ? ` · <b style="color:var(--red)">${won(ts.due)} 남음</b>` : ' · ✅ 완납'}</div>` : ''}
+          <div class="mt">${monthTable}${payTable(d.tuition, '교육비')}</div></div>` : '<div></div>'}
+        ${v.bookpay ? `<div class="card"><div class="row"><h2 style="margin:0">교재비</h2><span class="space"></span>${own ? '<button class="btn sm no-print" data-addpay="교재비">＋ 수납 기록</button>' : ''}</div>
+          <div class="small mt">배부한 교재 ${won(bs.total)} · 납부 ${won(bs.paid)}${bs.due ? ` · <b style="color:var(--red)">${won(bs.due)} 미납</b>` : ' · ✅ 정산 완료'}${bs.over ? ` · <span class="chip blue">${won(bs.over)} 더 냄</span>` : ''}</div>
+          <div class="mt">${payTable(d.bookpay, '교재비')}</div></div>` : ''}
+      </div>` : ''}
 
       ${v.books ? `
       <div class="card mt">
@@ -858,30 +990,28 @@
           <td style="text-align:right">${own || b.given_by === state.me.id ? `<button class="btn sm danger no-print" data-delbook="${b.id}">삭제</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">교재 배부 기록이 없어요</div>'}
       </div>` : ''}
 
-      ${v.tuition || v.bookpay ? `<div class="grid g2 mt">
-        ${v.tuition ? `<div class="card"><div class="row"><h2 style="margin:0">교육비 수납 내역</h2><span class="space"></span>${own ? '<button class="btn sm no-print" data-addpay="교육비">＋ 수납 기록</button>' : ''}</div><div class="mt">${payTable(d.tuition, '교육비')}</div></div>` : '<div></div>'}
-        ${v.bookpay ? `<div class="card"><div class="row"><h2 style="margin:0">교재비 수납 내역</h2><span class="space"></span>${own ? '<button class="btn sm no-print" data-addpay="교재비">＋ 수납 기록</button>' : ''}</div><div class="mt">${payTable(d.bookpay, '교재비')}</div></div>` : ''}
-      </div>` : ''}
-
-      <div class="grid g2 mt">
-        <div class="card"><h2>최근 60일 출결 <span class="small muted">결석 ${absent} · 지각/조퇴 ${late}</span></h2>
-          ${d.attendance.length ? `<div style="max-height:280px;overflow-y:auto"><table class="list"><tbody>${d.attendance.map((a) => `<tr><td>${prettyDate(a.date)}</td><td class="small">${h(a.course_name)}</td><td>${statusChip(a.status)}</td><td class="small muted">${h(a.memo || '')}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">기록이 없어요</div>'}
-        </div>
-        <div class="card"><h2>피드백</h2>${d.feedbacks.length ? `<div style="max-height:280px;overflow-y:auto">${d.feedbacks.map((f) => `<div class="item"><div class="row"><span class="chip green">${h(f.subject)}</span><b>${h(f.period_title)}</b>${statusChip(f.status)}</div><div class="content small">${h(f.content)}</div></div>`).join('')}</div>` : '<div class="empty">피드백이 없어요</div>'}</div>
-      </div>
-
-      ${d.flags.length ? `<div class="card mt"><h2>이탈 신호 표시</h2>${d.flags.map((f) => `<div class="item"><div class="row">${f.resolved ? '<span class="chip">해결됨</span>' : '<span class="chip red">진행 중</span>'}<b>${h(f.reason)}</b><span class="small muted">${h(f.created_by_name || '')} · ${prettyTime(f.created_at)}</span></div>${f.resolution ? `<div class="small muted">→ ${h(f.resolution)}</div>` : ''}</div>`).join('')}</div>` : ''}
-
       <div class="card mt no-print"><h2>최근 보낸 문자</h2>${d.messages.length ? `<table class="list"><tbody>${d.messages.map((m) => `<tr><td style="white-space:nowrap">${prettyTime(m.created_at)}</td><td>${h(m.kind)}</td><td class="small">${h(fmtPhone(m.to_phone) || '')}</td><td>${statusChip(m.status)}</td><td><details><summary class="small">${h(m.body.slice(0, 30))}…</summary><div class="preview">${h(m.body)}</div></details></td></tr>`).join('')}</tbody></table>` : '<div class="empty">보낸 문자가 없어요</div>'}</div>
       ${own ? '' : '<div class="small muted mt">🔒 원장님이 정한 범위의 정보만 보여요.</div>'}`;
+
+    // 타임라인 고르기
+    const tlFilter = { type: '', sub: '' };
+    const applyTl = () => {
+      const items = $$('#timeline .tl-item', el);
+      items.forEach((it) => (it.style.display = (!tlFilter.type || it.dataset.type === tlFilter.type) && (!tlFilter.sub || it.dataset.subject === tlFilter.sub || it.dataset.subject === '공통') ? '' : 'none'));
+      // 보이는 항목이 없는 달 제목은 숨기기
+      $$('#timeline [data-month]', el).forEach((mh) => {
+        let n = mh.nextElementSibling, any = false;
+        while (n && !n.hasAttribute('data-month')) { if (n.style.display !== 'none') any = true; n = n.nextElementSibling; }
+        mh.style.display = any ? '' : 'none';
+      });
+    };
+    $$('[data-tltype]', el).forEach((b) => (b.onclick = () => { $$('[data-tltype]', el).forEach((x) => x.classList.toggle('primary', x === b)); tlFilter.type = b.dataset.tltype; applyTl(); }));
+    $$('[data-tlsub]', el).forEach((b) => (b.onclick = () => { $$('[data-tlsub]', el).forEach((x) => x.classList.toggle('primary', x === b)); tlFilter.sub = b.dataset.tlsub; applyTl(); }));
 
     $('#photoBtn').onclick = () => pickStudentPhoto(id, reload);
     $('#consult').onclick = () => consultModal({ student_id: id });
     $('#flag').onclick = () => flagModal(id);
-    $$('[data-subj]', el).forEach((b) => (b.onclick = () => {
-      $$('[data-subj]', el).forEach((x) => x.classList.toggle('primary', x === b));
-      $$('#consults .item', el).forEach((it) => (it.style.display = !b.dataset.subj || it.dataset.subject === b.dataset.subj ? '' : 'none'));
-    }));
+
     if ($('#addBook')) $('#addBook').onclick = () => modal({
       title: `${s.name} 교재 배부`,
       body: `<div class="grid g2"><label class="field"><span>날짜</span><input type="date" name="date" value="${todayStr()}"></label>
@@ -1161,6 +1291,247 @@
     };
   }
 
+
+  // ───────── 엑셀(.xlsx) 읽기 — 따로 프로그램 없이 브라우저에서 바로 ─────────
+  async function readXlsx(file) {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const dv = new DataView(buf.buffer);
+    if (dv.getUint32(0, true) !== 0x04034b50) throw new Error('엑셀(.xlsx) 파일이 아니에요. 엑셀에서 "다른 이름으로 저장 → Excel 통합 문서(.xlsx)"로 저장해서 올리거나, 내용을 복사해 붙여 넣어 주세요.');
+    let eocd = -1;
+    for (let i = buf.length - 22; i >= Math.max(0, buf.length - 70000); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    if (eocd < 0) throw new Error('파일을 읽지 못했어요');
+    const count = dv.getUint16(eocd + 10, true);
+    let p = dv.getUint32(eocd + 16, true);
+    const files = {};
+    const dec = new TextDecoder();
+    for (let k = 0; k < count; k++) {
+      const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+      const nlen = dv.getUint16(p + 28, true), elen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+      const off = dv.getUint32(p + 42, true);
+      files[dec.decode(buf.slice(p + 46, p + 46 + nlen))] = { method, csize, off };
+      p += 46 + nlen + elen + clen;
+    }
+    const read = async (name) => {
+      const f = files[name];
+      if (!f) return null;
+      const start = f.off + 30 + dv.getUint16(f.off + 26, true) + dv.getUint16(f.off + 28, true);
+      const raw = buf.slice(start, start + f.csize);
+      if (f.method === 0) return dec.decode(raw);
+      const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      return new Response(stream).text();
+    };
+    const xml = (t) => new DOMParser().parseFromString(t, 'application/xml');
+    const shared = [];
+    const ss = await read('xl/sharedStrings.xml');
+    if (ss) for (const si of xml(ss).getElementsByTagName('si')) shared.push([...si.getElementsByTagName('t')].map((t) => t.textContent).join(''));
+    const sheetName = files['xl/worksheets/sheet1.xml'] ? 'xl/worksheets/sheet1.xml' : Object.keys(files).filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort()[0];
+    const doc = xml(await read(sheetName));
+    const rows = [];
+    for (const row of doc.getElementsByTagName('row')) {
+      const out = [];
+      for (const c of row.getElementsByTagName('c')) {
+        const ref = c.getAttribute('r') || '';
+        const letters = ref.replace(/\d+/g, '');
+        let col = 0;
+        for (const ch of letters) col = col * 26 + (ch.charCodeAt(0) - 64);
+        const t = c.getAttribute('t');
+        const v = c.getElementsByTagName('v')[0];
+        let val = '';
+        if (t === 's' && v) val = shared[Number(v.textContent)] ?? '';
+        else if (t === 'inlineStr') val = [...c.getElementsByTagName('t')].map((x) => x.textContent).join('');
+        else if (v) val = v.textContent;
+        out[(col || out.length + 1) - 1] = val;
+      }
+      rows.push([...out].map((x) => x ?? ''));
+    }
+    return rows;
+  }
+  const excelDate = (v) => {
+    if (!/^\d+(\.\d+)?$/.test(String(v)) || Number(v) < 20000) return String(v);
+    const d = new Date(Math.round((Number(v) - 25569) * 864e5));
+    const z = (n) => String(n).padStart(2, '0');
+    return `${d.getUTCFullYear()}-${z(d.getUTCMonth() + 1)}-${z(d.getUTCDate())} ${z(d.getUTCHours())}:${z(d.getUTCMinutes())}:${z(d.getUTCSeconds())}`;
+  };
+  // 제목 줄을 찾아 칸을 맞춰요
+  function payRowsFromGrid(grid) {
+    const hi = grid.findIndex((r) => r.some((c) => /결제자|거래일시|결제금액/.test(String(c))));
+    if (hi < 0) throw new Error('"거래일시 · 결제자 · 결제금액" 제목 줄을 찾지 못했어요. 영주사랑에서 내려받은 파일인지 확인해 주세요.');
+    const head = grid[hi].map((c) => String(c).replace(/\s/g, ''));
+    const find = (re) => head.findIndex((c) => re.test(c));
+    const col = { date: find(/일시|일자|날짜/), method: find(/구분|수단|방법/), payer: find(/결제자|이름|성명|고객/), amount: find(/금액/), status: find(/상태/), memo: find(/메모|비고/) };
+    if (col.payer < 0 || col.amount < 0) throw new Error('결제자 또는 결제금액 칸을 찾지 못했어요');
+    const get = (r, k) => (col[k] >= 0 ? String(r[col[k]] ?? '').trim() : '');
+    return grid.slice(hi + 1)
+      .map((r) => ({ date: excelDate(get(r, 'date')), method: get(r, 'method'), payer: get(r, 'payer'), amount: get(r, 'amount'), status: get(r, 'status'), memo: get(r, 'memo') }))
+      .filter((r) => r.payer && r.amount);
+  }
+
+  // ───────── 영주사랑 결제 대조 (원장) ─────────
+  async function pagePayImport(el) {
+    el.innerHTML = `
+      <div class="page-head"><div><h1>영주사랑 결제 대조</h1><p>영주사랑 모바일에서 내려받은 결제 엑셀을 올리면, 학부모 이름·핸드폰 뒷자리·메모로 학생을 찾아 수납 기록을 넣어 드려요.</p></div></div>
+      <div class="card">
+        <div class="howto">
+          <b>1.</b> 영주사랑 관리 화면에서 결제 내역을 엑셀로 내려받아 주세요.<br>
+          <b>2.</b> 아래 <b>파일 고르기</b>를 눌러 그 파일을 골라 주세요. (같은 파일을 또 올려도 이미 기록한 결제는 다시 기록하지 않아요)
+        </div>
+        <div class="row"><label class="btn primary" style="cursor:pointer">📂 파일 고르기<input type="file" id="xfile" accept=".xlsx,.csv" hidden></label>
+          <span class="small muted">또는</span><button class="btn sm" id="pasteBtn">엑셀 내용 붙여 넣기</button><span class="small muted" id="fname"></span></div>
+        <div id="pasteBox" hidden class="mt"><textarea id="pasteText" style="min-height:140px" placeholder="엑셀에서 제목 줄(거래일시·결제구분·결제자·결제금액…)부터 Ctrl+A, Ctrl+C 한 다음 여기에 Ctrl+V"></textarea>
+          <button class="btn sm mt" id="pasteGo">대조하기</button></div>
+      </div>
+      <div id="result"></div>`;
+    const run = async (rows) => {
+      if (!rows.length) return toast('결제 줄이 없어요');
+      $('#result').innerHTML = '<div class="card mt muted">대조하는 중…</div>';
+      try {
+        const [pv, all] = await Promise.all([api('POST', '/api/payments/import/preview', { rows }), api('GET', '/api/students?status=')]);
+        renderMatch($('#result'), pv.rows, all.students, rows);
+      } catch (e) { $('#result').innerHTML = errBox(e); }
+    };
+    $('#xfile').onchange = async (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      $('#fname').textContent = f.name;
+      try {
+        const grid = /\.csv$/i.test(f.name) ? (await f.text()).split(/\r?\n/).map((l) => l.split(',')) : await readXlsx(f);
+        await run(payRowsFromGrid(grid));
+      } catch (err) { $('#result').innerHTML = errBox(err); }
+      e.target.value = '';
+    };
+    $('#pasteBtn').onclick = () => { $('#pasteBox').hidden = false; $('#pasteText').focus(); };
+    $('#pasteGo').onclick = async () => {
+      try { await run(payRowsFromGrid($('#pasteText').value.split(/\r?\n/).map((l) => l.split('\t')))); } catch (err) { $('#result').innerHTML = errBox(err); }
+    };
+  }
+
+  function renderMatch(box, rows, students, original) {
+    const byId = new Map(students.map((x) => [x.id, x]));
+    const STATE = { sure: ['✅ 확실', 'green'], check: ['🟡 확인 필요', 'gold'], none: ['🔴 못 찾음', 'red'], done: ['⏭ 이미 기록됨', ''], cancelled: ['✖ 취소된 결제', ''] };
+    // 줄마다 기록할 몫(parts)
+    for (const r of rows) {
+      r.on = r.state === 'sure' || r.state === 'check';
+      r.parts = [{ student_id: r.student_id, kind: r.kind, month: r.month, amount: r.amount }];
+      r.cinfo = new Map(r.candidates.map((c) => [c.student_id, c]));
+    }
+    const groups = new Map();
+    rows.forEach((r) => groups.set(r.payer, [...(groups.get(r.payer) || []), r]));
+    let filter = '';
+    const studentOptions = (r, sel) => {
+      const cands = r.candidates.map((c) => `<option value="${c.student_id}" ${c.student_id === sel ? 'selected' : ''}>★ ${h(c.name)} (${h(c.school || '')} ${h(c.grade || '')}) — ${h(c.why)}</option>`).join('');
+      const rest = students.filter((x) => !r.cinfo.has(x.id)).map((x) => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${h(x.name)} (${h(x.school || '')} ${h(x.grade || '')}${x.status !== '재원' ? ', ' + h(x.status) : ''})</option>`).join('');
+      return `<option value="">— 학생 고르기 —</option>${cands}${cands ? '<option disabled>──────────</option>' : ''}${rest}`;
+    };
+    // 이번에 넣을 금액까지 합쳐서 학생별 상태 계산
+    const hintFor = (r, part) => {
+      if (!part.student_id) return '';
+      const c = r.cinfo.get(part.student_id);
+      const sameAlloc = (kind, month) => rows.reduce((a, x) => a + (x.on && x.state !== 'done' && x.state !== 'cancelled' ? x.parts.filter((pp) => pp.student_id === part.student_id && pp.kind === kind && (kind === '교재비' || pp.month === month)).reduce((s2, pp) => s2 + (Number(pp.amount) || 0), 0) : 0), 0);
+      if (part.kind === '교재비') {
+        const due = c ? c.book_due : (byId.get(part.student_id) || {}).book_due;
+        if (due == null) return '';
+        const after = due - sameAlloc('교재비');
+        return `교재비 미납 ${won(due)} → ${after <= 0 ? (after < 0 ? `<b style="color:var(--blue)">${won(-after)} 더 냄</b>` : '<b style="color:var(--brand)">정산 완료</b>') : `<b style="color:var(--orange)">${won(after)} 남음</b>`}`;
+      }
+      if (!c || !c.fee) return c ? '수강료가 정해지지 않았어요' : '';
+      const total = c.paid + sameAlloc('교육비', part.month);
+      const left = c.fee - total;
+      return `${Number(part.month.slice(5))}월 수강료 ${won(c.fee)} · 기존 ${won(c.paid)} + 이번 ${won(total - c.paid)} → ${left <= 0 ? (left < 0 ? `<b style="color:var(--blue)">${won(-left)} 더 냄</b>` : '<b style="color:var(--brand)">완납</b>') : `<b style="color:var(--orange)">${won(left)} 남음</b>`}`;
+    };
+    const draw = () => {
+      const cnt = (k) => rows.filter((r) => r.state === k).length;
+      const chosen = rows.filter((r) => r.on && r.state !== 'done' && r.state !== 'cancelled');
+      const readyN = chosen.filter((r) => r.parts.every((pp) => pp.student_id && pp.amount > 0 && (pp.kind === '교재비' || pp.month))).length;
+      const sum = chosen.reduce((a, r) => a + r.amount, 0);
+      let gi = 0;
+      const shade = new Map([...groups.keys()].map((k) => [k, groups.get(k).length > 1 ? (gi++ % 2 ? 'g2' : 'g1') : '']));
+      box.innerHTML = `
+        <div class="card mt">
+          <div class="row">
+            <h2 style="margin:0">대조 결과 ${rows.length}건</h2><span class="space"></span>
+            ${[['', `전체 ${rows.length}`], ['sure', `✅ 확실 ${cnt('sure')}`], ['check', `🟡 확인 필요 ${cnt('check')}`], ['none', `🔴 못 찾음 ${cnt('none')}`], ['done', `⏭ 기록됨 ${cnt('done')}`], ['cancelled', `✖ 취소 ${cnt('cancelled')}`]]
+              .filter(([k], i) => !i || cnt(k)).map(([k, l]) => `<button class="btn sm ${filter === k ? 'primary' : ''}" data-flt="${k}">${l}</button>`).join('')}
+          </div>
+          <div class="small muted" style="margin-top:6px">★ 표시는 앱이 찾은 학생이에요. 🟡·🔴 줄은 학생을 골라 주세요. 같은 분이 여러 번 결제한 줄은 같은 색 묶음으로 보여요. 형제 몫을 한 번에 낸 경우 <b>나눠 기록</b>을 눌러 주세요.</div>
+          <div class="table-wrap mt"><table class="list match">
+            <thead><tr><th></th><th>결제</th><th style="text-align:right">금액</th><th>학생 · 종류 · 해당 월</th><th>상태</th></tr></thead>
+            <tbody>${rows.filter((r) => !filter || r.state === filter).map((r) => {
+              const g = groups.get(r.payer);
+              const lock = r.state === 'done' || r.state === 'cancelled';
+              return `<tr class="${shade.get(r.payer)} ${lock ? 'locked' : ''}" data-i="${r.i}">
+                <td><input type="checkbox" data-on ${r.on && !lock ? 'checked' : ''} ${lock ? 'disabled' : ''}></td>
+                <td style="min-width:170px"><b>${h(r.payer)}</b><div class="small muted">${h(r.date || '')} ${h(r.time || '')} · ${h(r.method_raw)}</div>${r.memo ? `<div class="small">📝 ${h(r.memo)}</div>` : ''}
+                  ${g.length > 1 && g[0] === r ? `<div class="small" style="color:var(--brand)">같은 분 ${g.length}건 · 합계 ${won(g.reduce((a, x) => a + x.amount, 0))}</div>` : ''}</td>
+                <td style="text-align:right;white-space:nowrap"><b>${won(r.amount)}</b></td>
+                <td style="min-width:380px">${lock ? `<span class="muted small">${r.state === 'done' ? '이미 앱에 기록된 결제예요' : '취소된 결제라 기록하지 않아요'}</span>` : r.parts.map((pp, k) => `
+                  <div class="part" data-k="${k}">
+                    <select data-f="student_id" style="max-width:260px">${studentOptions(r, pp.student_id)}</select>
+                    <select data-f="kind" style="width:auto"><option ${pp.kind === '교육비' ? 'selected' : ''}>교육비</option><option ${pp.kind === '교재비' ? 'selected' : ''}>교재비</option></select>
+                    ${pp.kind === '교육비' ? `<input type="month" data-f="month" value="${h(pp.month)}" style="width:auto">` : ''}
+                    ${r.parts.length > 1 ? `<input type="text" inputmode="numeric" data-f="amount" value="${pp.amount}" style="width:110px" title="금액">${k ? `<button class="btn sm" data-del title="이 몫 지우기">✕</button>` : ''}` : ''}
+                    <div class="small muted hint">${hintFor(r, pp)}</div>
+                  </div>`).join('') + `<button class="btn sm" data-split>＋ 나눠 기록</button>${r.parts.length > 1 ? ` <span class="small ${r.parts.reduce((a, pp) => a + (Number(pp.amount) || 0), 0) === r.amount ? 'muted' : ''}" style="${r.parts.reduce((a, pp) => a + (Number(pp.amount) || 0), 0) === r.amount ? '' : 'color:var(--red)'}">나눈 합계 ${won(r.parts.reduce((a, pp) => a + (Number(pp.amount) || 0), 0))} / ${won(r.amount)}</span>` : ''}`}</td>
+                <td><span class="chip ${STATE[r.state][1]}">${STATE[r.state][0]}</span>${r.siblings ? '<div class="small" style="color:var(--orange)">형제가 같은 번호예요</div>' : ''}</td></tr>`;
+            }).join('')}</tbody></table></div>
+          <div class="sticky-bar row"><span>체크한 <b>${chosen.length}건</b> · ${won(sum)}${readyN < chosen.length ? ` <span style="color:var(--red)">(${chosen.length - readyN}건은 학생·월을 골라 주세요)</span>` : ''}</span><span class="space"></span>
+            <button class="btn primary" id="commit" ${chosen.length && readyN === chosen.length ? '' : 'disabled'}>체크한 ${chosen.length}건 수납 기록하기</button></div>
+        </div>`;
+      $$('[data-flt]', box).forEach((b) => (b.onclick = () => { filter = b.dataset.flt; draw(); }));
+      $$('tr[data-i]', box).forEach((tr) => {
+        const r = rows.find((x) => x.i === Number(tr.dataset.i));
+        const on = $('[data-on]', tr);
+        if (on) on.onchange = () => { r.on = on.checked; draw(); };
+        $$('.part', tr).forEach((pd) => {
+          const pp = r.parts[Number(pd.dataset.k)];
+          $$('[data-f]', pd).forEach((inp) => (inp.onchange = () => {
+            const f = inp.dataset.f;
+            pp[f] = f === 'student_id' ? Number(inp.value) || null : f === 'amount' ? Number(String(inp.value).replace(/[^0-9]/g, '')) || 0 : inp.value;
+            if (f === 'student_id' && pp.student_id) r.on = true;
+            if (f === 'amount' && r.parts.length === 2 && Number(pd.dataset.k) === 1) r.parts[0].amount = Math.max(0, r.amount - pp.amount);
+            draw();
+          }));
+          const del = $('[data-del]', pd);
+          if (del) del.onclick = () => { r.parts.splice(Number(pd.dataset.k), 1); if (r.parts.length === 1) r.parts[0].amount = r.amount; draw(); };
+        });
+        const sp = $('[data-split]', tr);
+        if (sp) sp.onclick = () => {
+          // 형제가 있으면 형제를, 수강료 비율대로 나눠 미리 채워요
+          const used = new Set(r.parts.map((pp) => pp.student_id));
+          const next = r.candidates.find((c) => !used.has(c.student_id));
+          r.parts.push({ student_id: next ? next.student_id : null, kind: '교육비', month: r.month, amount: 0 });
+          const fees = r.parts.map((pp) => (r.cinfo.get(pp.student_id) || {}).fee || 0);
+          const tot = fees.reduce((a, b) => a + b, 0);
+          if (tot > 0) {
+            let left = r.amount;
+            r.parts.forEach((pp, k) => { pp.amount = k === r.parts.length - 1 ? left : Math.round((r.amount * fees[k]) / tot / 1000) * 1000; left -= pp.amount; });
+          } else {
+            const each = Math.floor(r.amount / r.parts.length / 1000) * 1000;
+            r.parts.forEach((pp, k) => (pp.amount = k === r.parts.length - 1 ? r.amount - each * (r.parts.length - 1) : each));
+          }
+          r.on = true;
+          draw();
+        };
+      });
+      $('#commit', box).onclick = async () => {
+        const items = [];
+        for (const r of chosen) {
+          const total = r.parts.reduce((a, pp) => a + (Number(pp.amount) || 0), 0);
+          if (r.parts.length > 1 && total !== r.amount) return toast(`${r.payer} ${won(r.amount)}: 나눈 금액 합계가 맞지 않아요`);
+          r.parts.forEach((pp, k) => items.push({ ref: k ? `${r.ref}#${k}` : r.ref, student_id: pp.student_id, kind: pp.kind, month: pp.month, amount: r.parts.length > 1 ? pp.amount : r.amount, paid_date: r.date, method: r.method, memo: `영주사랑 ${r.payer}${r.memo ? ' · ' + r.memo : ''}` }));
+        }
+        if (!confirm(`${chosen.length}건(${won(sum)})을 수납 기록할까요?`)) return;
+        $('#commit', box).disabled = true;
+        try {
+          const res = await api('POST', '/api/payments/import', { items });
+          toast(`${res.added}건 기록했어요${res.skipped ? ` (${res.skipped}건은 이미 기록돼 있어 건너뜀)` : ''}`);
+          const [pv, all] = await Promise.all([api('POST', '/api/payments/import/preview', { rows: original }), api('GET', '/api/students?status=')]);
+          renderMatch(box, pv.rows, all.students, original);
+        } catch (e) { toast(e.message); $('#commit', box).disabled = false; }
+      };
+    };
+    draw();
+  }
+
   const PAGES = {
     '': { render: pageDashboard },
     attendance: { render: pageAttendance },
@@ -1173,6 +1544,7 @@
     periods: { render: pagePeriods, owner: true },
     teachers: { render: pageTeachers, owner: true },
     settings: { render: pageSettings, owner: true },
+    payimport: { render: pagePayImport, owner: true },
     me: { render: pageMe },
   };
 

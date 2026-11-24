@@ -280,3 +280,28 @@ table.kv td:first-child { width: 110px; white-space: nowrap; }
 .timetable td.muted { width: 14px; text-align: center; }
 .timetable tr:not(.on) input[type=time] { opacity: .45; }
 .timetable tr.on td:first-child b { color: var(--brand); }
+
+.howto { background: #f7fbef; border: 1px solid #dfeccb; border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; font-size: 14px; }
+#bulkPreview th, #bulkPreview td { white-space: nowrap; }
+
+/* ───── 학생 카드: 한눈에 보기 / 타임라인 ───── */
+.glance { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.glance .card { margin: 0; padding: 14px 16px; }
+.glance .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timeline { position: relative; }
+.tl-month { font-weight: 700; color: #4f6b28; margin: 16px 0 6px; font-size: 14px; }
+.tl-month:first-child { margin-top: 0; }
+.tl-item { display: grid; grid-template-columns: 92px 30px 1fr; gap: 8px; padding: 10px 0; border-bottom: 1px solid #f0ede6; }
+.tl-date { font-size: 13px; color: var(--muted); padding-top: 4px; white-space: nowrap; }
+.tl-dot { width: 30px; height: 30px; border-radius: 50%; background: var(--lime-soft); display: grid; place-items: center; font-size: 15px; }
+.tl-body .content { margin-top: 4px; }
+@media (max-width: 760px) { .tl-item { grid-template-columns: 30px 1fr; } .tl-date { grid-column: 2; padding: 0; } .tl-dot { grid-row: 1 / span 2; } }
+@media print { .glance { grid-template-columns: repeat(3, 1fr); } }
+
+/* ───── 결제 대조 ───── */
+table.match tr.g1 td { background: #f6fbec; }
+table.match tr.g2 td { background: #eef5fb; }
+table.match tr.locked td { opacity: .55; }
+table.match .part { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 3px 0; }
+table.match .part .hint { flex-basis: 100%; }
+table.match select, table.match input[type=month], table.match input[type=text] { padding: 5px 8px; font-size: 13.5px; }

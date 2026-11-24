@@ -137,6 +137,24 @@ export const SCHEMA = [
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     resolved_at TEXT
   )`,
+  // 수업 일지 (반·날짜마다 한 장)
+  `CREATE TABLE IF NOT EXISTS class_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    course_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    teacher_id INTEGER,
+    content TEXT,
+    homework TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (course_id, date)
+  )`,
+  `CREATE TABLE IF NOT EXISTS class_log_notes (
+    log_id INTEGER NOT NULL,
+    student_id INTEGER NOT NULL,
+    note TEXT,
+    PRIMARY KEY (log_id, student_id)
+  )`,
   // 교재 배부 내역
   `CREATE TABLE IF NOT EXISTS book_deliveries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -161,6 +179,7 @@ export const SCHEMA = [
     method TEXT,
     memo TEXT,
     created_by INTEGER,
+    ref TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE TABLE IF NOT EXISTS settings (
@@ -218,6 +237,7 @@ const MIGRATIONS = [
   'ALTER TABLE users ADD COLUMN staff_role TEXT',
   'ALTER TABLE courses ADD COLUMN fee INTEGER',
   'ALTER TABLE courses ADD COLUMN times TEXT',
+  'ALTER TABLE payments ADD COLUMN ref TEXT',
   'ALTER TABLE enrollments ADD COLUMN fee INTEGER',
   'ALTER TABLE consultations ADD COLUMN subject TEXT',
 ];
