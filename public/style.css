@@ -305,3 +305,17 @@ table.match tr.locked td { opacity: .55; }
 table.match .part { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 3px 0; }
 table.match .part .hint { flex-basis: 100%; }
 table.match select, table.match input[type=month], table.match input[type=text] { padding: 5px 8px; font-size: 13.5px; }
+
+/* ───── 교재 ───── */
+.bookimg { object-fit: contain; background: #fff; border: 1px solid var(--line); border-radius: 6px; display: inline-block; vertical-align: middle; flex-shrink: 0; }
+.bookimg.none { display: inline-grid; place-items: center; background: var(--lime-soft); color: #7d8f66; font-size: 18px; }
+.bookgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.bookgrid .card { margin: 0; }
+.bookcard { display: flex; gap: 14px; align-items: flex-start; }
+.bookcard.off { opacity: .55; }
+.bk-name { font-weight: 700; text-decoration: none; font-size: 15.5px; }
+.bk-info { flex: 1; min-width: 0; }
+.bookhead { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; }
+.bk-big { position: relative; cursor: pointer; }
+.bk-big .cam { position: absolute; right: -6px; bottom: -6px; background: #fff; border-radius: 50%; width: 30px; height: 30px; display: grid; place-items: center; box-shadow: var(--shadow); }
+.discounts .days label.on { background: var(--lime-soft); border-color: var(--lime-2); }

@@ -155,12 +155,64 @@ export const SCHEMA = [
     note TEXT,
     PRIMARY KEY (log_id, student_id)
   )`,
+  // 학생별 할인 (항목과 금액은 설정의 discount_items)
+  `CREATE TABLE IF NOT EXISTS student_discounts (
+    student_id INTEGER NOT NULL,
+    item_id TEXT NOT NULL,
+    PRIMARY KEY (student_id, item_id)
+  )`,
+  // 과목별 등록일·퇴원일
+  `CREATE TABLE IF NOT EXISTS student_subjects (
+    student_id INTEGER NOT NULL,
+    subject TEXT NOT NULL,
+    start_date TEXT,
+    end_date TEXT,
+    PRIMARY KEY (student_id, subject)
+  )`,
+  // 교재 목록
+  `CREATE TABLE IF NOT EXISTS books (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    level TEXT,
+    subject TEXT,
+    supplier TEXT,
+    name TEXT NOT NULL,
+    list_price INTEGER,
+    sale_price INTEGER,
+    image TEXT,
+    image_v INTEGER,
+    memo TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  // 교재 입고 (수량이 음수면 반품·조정)
+  `CREATE TABLE IF NOT EXISTS book_stock (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    qty INTEGER NOT NULL,
+    supplier TEXT,
+    memo TEXT,
+    created_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  // 청구서 보낸 기록
+  `CREATE TABLE IF NOT EXISTS bills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id INTEGER NOT NULL,
+    month TEXT NOT NULL,
+    items TEXT,
+    total INTEGER NOT NULL,
+    status TEXT,
+    sent_by INTEGER,
+    sent_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
   // 교재 배부 내역
   `CREATE TABLE IF NOT EXISTS book_deliveries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     student_id INTEGER NOT NULL,
     date TEXT NOT NULL,
     title TEXT NOT NULL,
+    book_id INTEGER,
     subject TEXT,
     qty INTEGER NOT NULL DEFAULT 1,
     price INTEGER,
@@ -191,6 +243,9 @@ export const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_msg_created ON messages (created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_consult_student ON consultations (student_id)`,
   `CREATE INDEX IF NOT EXISTS idx_books_student ON book_deliveries (student_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_deliv_book ON book_deliveries (book_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_stock_book ON book_stock (book_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_bills_student ON bills (student_id, month)`,
   `CREATE INDEX IF NOT EXISTS idx_pay_student ON payments (student_id, kind)`,
   `CREATE INDEX IF NOT EXISTS idx_students_family ON students (family_id)`,
 ];
@@ -205,6 +260,17 @@ export const DEFAULT_SETTINGS = {
   tpl_attendance: '[{학원}] {학생} 학생이 {날짜} {반} 수업에 {상태}하였습니다.{메모}',
   tpl_feedback: '[{학원}] {학생} 학생 {과목} 수업 피드백\n\n{내용}\n\n- {선생님} 드림',
   send_mode: 'preview',
+  // 할인 항목 (설정에서 바꿀 수 있어요)
+  discount_items: JSON.stringify([
+    { id: 'd1', name: '2과목수강할인', amount: 20000 },
+    { id: 'd2', name: '3과목수강할인', amount: 40000 },
+    { id: 'd3', name: '3과목수강할인', amount: 50000 },
+    { id: 'd4', name: '가족할인', amount: 10000 },
+    { id: 'd5', name: '가족할인', amount: 30000 },
+  ]),
+  book_suppliers: JSON.stringify(['샘터서점', '대한서정', '러닝북스', '조이매스', '인터넷 총판']),
+  bank_account: '',
+  tpl_bill: '[{학원}] {학생} 학생 {월}월 수납 안내\n\n{내역}\n합계 {합계}\n\n입금 계좌: {계좌}\n이미 납부하셨다면 이 문자는 넘겨 주세요. 감사합니다.',
   // 강사에게 보여 줄 학생 정보 (원장은 항상 전부 봅니다)
   teacher_view: JSON.stringify({
     birth: true,
@@ -238,6 +304,7 @@ const MIGRATIONS = [
   'ALTER TABLE courses ADD COLUMN fee INTEGER',
   'ALTER TABLE courses ADD COLUMN times TEXT',
   'ALTER TABLE payments ADD COLUMN ref TEXT',
+  'ALTER TABLE book_deliveries ADD COLUMN book_id INTEGER',
   'ALTER TABLE enrollments ADD COLUMN fee INTEGER',
   'ALTER TABLE consultations ADD COLUMN subject TEXT',
 ];

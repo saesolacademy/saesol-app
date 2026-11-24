@@ -343,6 +343,25 @@ function shapeStudent(s, view) {
   return o;
 }
 
+// 할인: 항목은 설정(discount_items), 학생별 체크는 student_discounts
+function discountItems(settings) {
+  try {
+    const a = JSON.parse(settings.discount_items);
+    return Array.isArray(a) ? a.filter((x) => x && x.id && x.name) : [];
+  } catch {
+    return [];
+  }
+}
+async function discountTotals(db) {
+  const items = new Map(discountItems(await getSettings(db)).map((i) => [i.id, i]));
+  const m = new Map();
+  for (const r of await q.all(db, 'SELECT student_id, item_id FROM student_discounts')) {
+    const it = items.get(r.item_id);
+    if (it) m.set(r.student_id, (m.get(r.student_id) || 0) + (Number(it.amount) || 0));
+  }
+  return m;
+}
+
 // 이번 달 교육비 상태 (나눠 내는 경우 합계로 판단)
 function tuitionStatus(fee, paid) {
   fee = fee || 0;
@@ -394,10 +413,11 @@ route('GET', '/api/students', async ({ db, user, query }) => {
     ...params
   );
   const view = await viewOf(db, user);
+  const disc = view.fees ? await discountTotals(db) : new Map();
   return { month: today().slice(0, 7), students: rows.map((s) => {
     const o = shapeStudent(s, view);
     if (!view.siblings) delete o.sibling_count;
-    if (view.tuition && view.fees) o.tuition = tuitionStatus(s.fee_month, s.tuition_paid);
+    if (view.tuition && view.fees) o.tuition = tuitionStatus(Math.max(0, s.fee_month - (disc.get(s.id) || 0)), s.tuition_paid);
     if (view.bookpay) o.book_due = Math.max(0, s.book_total - s.book_paid), o.book_total = s.book_total, o.book_paid = s.book_paid;
     for (const k of ['fee_month', 'tuition_paid']) delete o[k];
     if (!view.bookpay) delete o.book_total, delete o.book_paid;
@@ -427,7 +447,10 @@ route('GET', '/api/students/:id', async ({ db, user, params }) => {
     messages: q.all(db, `SELECT m.id, m.kind, m.body, m.status, m.error, m.to_phone, m.created_at, u.name AS sent_by_name FROM messages m LEFT JOIN users u ON u.id = m.sent_by WHERE m.student_id = ? ORDER BY m.id DESC LIMIT 20`, id),
   };
   if (view.siblings && raw.family_id) jobs.siblings = q.all(db, `SELECT id, name, school, grade, status, photo_v FROM students WHERE family_id = ? AND id != ? ORDER BY birth_date, name`, raw.family_id, id);
-  if (view.books || view.bookpay) jobs.books = q.all(db, `SELECT b.*, u.name AS given_by_name FROM book_deliveries b LEFT JOIN users u ON u.id = b.given_by WHERE b.student_id = ? ORDER BY b.date DESC, b.id DESC`, id);
+  if (view.books || view.bookpay) jobs.books = q.all(db, `SELECT b.*, u.name AS given_by_name, bk.image_v AS book_image_v FROM book_deliveries b LEFT JOIN users u ON u.id = b.given_by LEFT JOIN books bk ON bk.id = b.book_id WHERE b.student_id = ? ORDER BY b.date DESC, b.id DESC`, id);
+  jobs.subjects = q.all(db, 'SELECT subject, start_date, end_date FROM student_subjects WHERE student_id = ?', id);
+  if (view.fees) jobs.my_discounts = q.all(db, 'SELECT item_id FROM student_discounts WHERE student_id = ?', id);
+  if (user.role === 'owner') jobs.bills = q.all(db, `SELECT bl.*, u.name AS sent_by_name FROM bills bl LEFT JOIN users u ON u.id = bl.sent_by WHERE bl.student_id = ? ORDER BY bl.id DESC LIMIT 24`, id);
   if (view.tuition) jobs.tuition = q.all(db, `SELECT p.*, u.name AS created_by_name FROM payments p LEFT JOIN users u ON u.id = p.created_by WHERE p.student_id = ? AND p.kind = '교육비' ORDER BY p.paid_date DESC, p.id DESC`, id);
   if (view.bookpay) jobs.bookpay = q.all(db, `SELECT p.*, u.name AS created_by_name FROM payments p LEFT JOIN users u ON u.id = p.created_by WHERE p.student_id = ? AND p.kind = '교재비' ORDER BY p.paid_date DESC, p.id DESC`, id);
 
@@ -443,7 +466,18 @@ route('GET', '/api/students/:id', async ({ db, user, params }) => {
     if (!view.fees) delete o.fee, delete o.course_fee, delete o.fee_custom;
     return o;
   });
-  if (view.fees) out.monthly_fee = out.courses.filter((c) => c.active).reduce((a, c) => a + (c.fee || 0), 0);
+  // 과목별 등록·퇴원: 기록이 없는 수강 과목도 보여 줍니다
+  const subjMap = new Map(out.subjects.map((x) => [x.subject, x]));
+  for (const c of out.courses) if (c.active && !subjMap.has(c.subject)) subjMap.set(c.subject, { subject: c.subject, start_date: null, end_date: null });
+  out.subjects = [...subjMap.values()].sort((a, b) => SUBJECTS.indexOf(a.subject) - SUBJECTS.indexOf(b.subject));
+  if (view.fees) {
+    out.gross_fee = out.courses.filter((c) => c.active).reduce((a, c) => a + (c.fee || 0), 0);
+    const checked = new Set(out.my_discounts.map((x) => x.item_id));
+    out.discount_items = discountItems(await getSettings(db)).map((i) => ({ ...i, on: checked.has(i.id) }));
+    out.discount_total = out.discount_items.filter((i) => i.on).reduce((a, i) => a + (Number(i.amount) || 0), 0);
+    out.monthly_fee = Math.max(0, out.gross_fee - out.discount_total);
+    delete out.my_discounts;
+  }
   if (view.tuition) {
     out.tuition_paid_this_month = out.tuition.some((p) => p.month === month);
     if (view.fees) out.tuition_status = tuitionStatus(out.monthly_fee, out.tuition.filter((p) => p.month === month).reduce((a, p) => a + p.amount, 0));
@@ -499,6 +533,10 @@ const BULK_LABELS = {
 function bulkField(header) {
   const n = String(header || '').replace(/[\s()·._\-\/]/g, '');
   if (!n) return null;
+  // 국어등록일 / 수학 퇴원일 같은 과목별 날짜
+  const subj = SUBJECTS.find((x) => x !== '기타' && n.includes(x));
+  if (subj && /(등록|입원|시작)/.test(n)) return `start:${subj}`;
+  if (subj && /(퇴원|종료|그만)/.test(n)) return `end:${subj}`;
   const tel = /(연락처|전화|휴대|핸드폰|번호|폰)/;
   if (/(학생|본인)/.test(n) && tel.test(n)) return 'student_phone';
   if (/(학부모|보호자|부모)/.test(n)) return tel.test(n) ? 'mother_phone' : 'mother_name';
@@ -521,6 +559,15 @@ function toDate(v) {
   const sraw = String(v || '').trim();
   if (!sraw) return { value: null };
   let m = sraw.match(/^(\d{4})\D+(\d{1,2})\D+(\d{1,2})/) || sraw.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (!m) {
+    // 130319- / 130319 / 130319-4 → 2013-03-19 (앞 6자리만 씁니다)
+    const y6 = sraw.match(/^(\d{2})(\d{2})(\d{2})(?:-\d*)?$/);
+    if (y6) {
+      const yy = Number(y6[1]);
+      const cur = Number(today().slice(2, 4));
+      m = [null, String(yy <= cur ? 2000 + yy : 1900 + yy), y6[2], y6[3]];
+    }
+  }
   if (!m) return { value: null, bad: true };
   const d = `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
   const ok = !isNaN(new Date(d + 'T00:00:00Z')) && Number(m[2]) <= 12 && Number(m[3]) <= 31;
@@ -536,6 +583,7 @@ function parseBulk(text) {
   const columns = hasHeader
     ? first.map((hd, i) => ({ header: hd, field: mapped[i], label: mapped[i] ? BULK_LABELS[mapped[i]] : null }))
     : ['name', 'school', 'grade', 'mother_phone', 'father_phone'].map((f) => ({ header: BULK_LABELS[f], field: f, label: BULK_LABELS[f] }));
+  for (const c of columns) if (c.field && c.field.includes(':')) c.label = `${c.field.split(':')[1]} ${c.field.startsWith('start') ? '등록일' : '퇴원일'}`;
   const body = hasHeader ? lines.slice(1) : lines;
   if (body.length > 300) fail(400, '한 번에 300명까지 등록할 수 있어요');
   const warnings = [];
@@ -552,11 +600,27 @@ function parseBulk(text) {
     if (!clean(r.name)) { warnings.push(`${lineNo}번째 줄: 이름이 없어서 건너뛰어요`); return; }
     const out = { name: clean(r.name) };
     for (const f of ['school', 'grade', 'address', 'father_name', 'mother_name', 'sibling_note', 'memo']) out[f] = clean(r[f]);
+    // 학년이 숫자만 있으면 학교 이름을 보고 초/중/고를 붙입니다 (예: 영주여중 + 1 → 중1)
+    if (out.grade && /^\d$/.test(out.grade) && out.school) {
+      const lv = /초(등학교)?$/.test(out.school) ? '초' : /중(학교)?$/.test(out.school) ? '중' : /고(등학교)?$/.test(out.school) ? '고' : '';
+      if (lv) out.grade = lv + out.grade;
+    }
     for (const f of ['student_phone', 'father_phone', 'mother_phone']) out[f] = phone(r[f]);
     for (const f of ['birth_date', 'enrolled_date']) {
       const d = toDate(r[f]);
       out[f] = d.value;
       if (d.bad) warnings.push(`${lineNo}번째 줄 ${out.name}: ${BULK_LABELS[f]} "${r[f]}"를 읽지 못해 비워 둬요`);
+    }
+    // 과목별 날짜
+    out.subjects = {};
+    for (const [k, v] of Object.entries(r)) {
+      if (!k.includes(':')) continue;
+      const [kind, subj] = k.split(':');
+      const d = toDate(v);
+      if (d.bad) warnings.push(`${lineNo}번째 줄 ${out.name}: ${subj} ${kind === 'start' ? '등록일' : '퇴원일'} "${v}"를 읽지 못해 비워 둬요`);
+      if (!d.value) continue;
+      out.subjects[subj] = out.subjects[subj] || {};
+      out.subjects[subj][kind] = d.value;
     }
     const t = String(r.sms_target || '');
     out.sms_target = /둘|모두|양/.test(t) ? '둘 다' : /(아버지|부|아빠)/.test(t) ? '아버지' : '어머니';
@@ -575,7 +639,14 @@ route(
     if (body.preview) return { ok: true, preview: true, ...parsed, total: parsed.rows.length, rows: parsed.rows.slice(0, 8) };
     if (!parsed.rows.length) fail(400, '등록할 학생이 없어요. 이름 칸을 확인해 주세요');
     const t = today();
-    await db.batch(parsed.rows.map((r) => db.prepare(`INSERT INTO students (${BULK_FIELDS.join(',')}) VALUES (${BULK_FIELDS.map(() => '?').join(',')})`).bind(...BULK_FIELDS.map((f) => (f === 'enrolled_date' ? r[f] || t : r[f] ?? null)))));
+    // 학생을 넣고, 바로 뒤에 그 학생의 과목별 날짜를 넣습니다 (MAX(id) = 방금 넣은 학생)
+    const stmts = [];
+    for (const r of parsed.rows) {
+      stmts.push(db.prepare(`INSERT INTO students (${BULK_FIELDS.join(',')}) VALUES (${BULK_FIELDS.map(() => '?').join(',')})`).bind(...BULK_FIELDS.map((f) => (f === 'enrolled_date' ? r[f] || t : r[f] ?? null))));
+      for (const [subj, d] of Object.entries(r.subjects || {}))
+        stmts.push(db.prepare('INSERT OR REPLACE INTO student_subjects (student_id, subject, start_date, end_date) VALUES ((SELECT MAX(id) FROM students), ?, ?, ?)').bind(subj, d.start || null, d.end || null));
+    }
+    await db.batch(stmts);
     return { ok: true, added: parsed.rows.length, warnings: parsed.warnings };
   },
   OM
@@ -648,6 +719,35 @@ route('DELETE', '/api/students/:id/siblings/:other', async ({ db, params }) => {
   return { ok: true };
 }, OM);
 
+// 학생별 할인 체크 (원장)
+route('PUT', '/api/students/:id/discounts', async ({ db, body, params }) => {
+  const id = Number(params.id);
+  if (!(await q.first(db, 'SELECT id FROM students WHERE id = ?', id))) fail(404, '학생을 찾을 수 없어요');
+  const valid = new Set(discountItems(await getSettings(db)).map((i) => i.id));
+  const ids = [...new Set((body.item_ids || []).map(String))].filter((x) => valid.has(x));
+  await db.batch([db.prepare('DELETE FROM student_discounts WHERE student_id = ?').bind(id), ...ids.map((x) => db.prepare('INSERT INTO student_discounts (student_id, item_id) VALUES (?, ?)').bind(id, x))]);
+  return { ok: true };
+}, OWNER);
+
+// 과목별 등록일·퇴원일 (원장·감독). 퇴원하면서 그 과목 반에서 빼기도 할 수 있어요.
+route('PUT', '/api/students/:id/subjects', async ({ db, body, params }) => {
+  const id = Number(params.id);
+  if (!(await q.first(db, 'SELECT id FROM students WHERE id = ?', id))) fail(404, '학생을 찾을 수 없어요');
+  if (!SUBJECTS.includes(body.subject)) fail(400, '과목을 골라 주세요');
+  const start = isDate(body.start_date) ? body.start_date : null;
+  const end = isDate(body.end_date) ? body.end_date : null;
+  if (start && end && end < start) fail(400, '퇴원일이 등록일보다 빨라요');
+  const stmts = [
+    !start && !end
+      ? db.prepare('DELETE FROM student_subjects WHERE student_id = ? AND subject = ?').bind(id, body.subject)
+      : db.prepare(`INSERT INTO student_subjects (student_id, subject, start_date, end_date) VALUES (?, ?, ?, ?)
+                    ON CONFLICT (student_id, subject) DO UPDATE SET start_date = excluded.start_date, end_date = excluded.end_date`).bind(id, body.subject, start, end),
+  ];
+  if (end && body.remove_from_courses) stmts.push(db.prepare('DELETE FROM enrollments WHERE student_id = ? AND course_id IN (SELECT id FROM courses WHERE subject = ?)').bind(id, body.subject));
+  await db.batch(stmts);
+  return { ok: true };
+}, OM);
+
 // 학생별 수강료 (원장) — 비우면 반 기본 금액을 씁니다
 route('PATCH', '/api/enrollments', async ({ db, body }) => {
   const e = await q.first(db, 'SELECT * FROM enrollments WHERE course_id = ? AND student_id = ?', Number(body.course_id), Number(body.student_id));
@@ -663,21 +763,24 @@ route('POST', '/api/students/:id/books', async ({ db, user, body, params }) => {
   await mustSeeStudent(db, user, id);
   if (!(await viewOf(db, user)).books) fail(403, '교재 배부 내역을 쓸 권한이 없어요');
   const qty = Math.max(1, Math.min(99, Number(body.qty) || 1));
+  const bk = body.book_id ? await q.first(db, 'SELECT * FROM books WHERE id = ?', Number(body.book_id)) : null;
+  if (body.book_id && !bk) fail(404, '교재를 찾을 수 없어요');
   const r = await q.run(
     db,
-    'INSERT INTO book_deliveries (student_id, date, title, subject, qty, price, memo, given_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO book_deliveries (student_id, book_id, date, title, subject, qty, price, memo, given_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     id,
+    bk ? bk.id : null,
     isDate(body.date) ? body.date : today(),
-    need(body.title, '교재 이름'),
-    SUBJECTS.includes(body.subject) ? body.subject : null,
+    bk ? bk.name : need(body.title, '교재 이름'),
+    SUBJECTS.includes(body.subject) ? body.subject : bk ? bk.subject : null,
     qty,
-    body.price === '' || body.price == null ? null : money(body.price),
+    body.price === '' || body.price == null ? (bk ? bk.sale_price ?? bk.list_price ?? null : null) : money(body.price),
     clean(body.memo),
     user.id
   );
   return { ok: true, id: r.meta.last_row_id };
 });
-route('DELETE', '/api/books/:id', async ({ db, user, params }) => {
+route('DELETE', '/api/deliveries/:id', async ({ db, user, params }) => {
   const b = await q.first(db, 'SELECT * FROM book_deliveries WHERE id = ?', Number(params.id));
   if (!b) fail(404, '기록을 찾을 수 없어요');
   if (user.role !== 'owner' && b.given_by !== user.id) fail(403, '내가 쓴 기록만 지울 수 있어요');
@@ -816,8 +919,18 @@ route(
     const id = Number(params.id);
     if (!(await q.first(db, 'SELECT id FROM courses WHERE id = ?', id))) fail(404, '반을 찾을 수 없어요');
     const ids = [...new Set((body.student_ids || []).map(Number).filter(Boolean))];
-    await db.batch([db.prepare('DELETE FROM enrollments WHERE course_id = ?').bind(id), ...ids.map((sid) => db.prepare('INSERT OR IGNORE INTO enrollments (course_id, student_id) VALUES (?, ?)').bind(id, sid))]);
-    return { ok: true, count: ids.length };
+    const course = await q.first(db, 'SELECT subject FROM courses WHERE id = ?', id);
+    const before = new Set((await q.all(db, 'SELECT student_id FROM enrollments WHERE course_id = ?', id)).map((r) => r.student_id));
+    const added = ids.filter((sid) => !before.has(sid));
+    const t = today();
+    await db.batch([
+      db.prepare('DELETE FROM enrollments WHERE course_id = ?').bind(id),
+      ...ids.map((sid) => db.prepare('INSERT OR IGNORE INTO enrollments (course_id, student_id) VALUES (?, ?)').bind(id, sid)),
+      // 새로 들어온 학생: 그 과목 등록일이 없거나 퇴원했던 경우 오늘로 다시 등록
+      ...added.map((sid) => db.prepare(`INSERT INTO student_subjects (student_id, subject, start_date) VALUES (?, ?, ?)
+        ON CONFLICT (student_id, subject) DO UPDATE SET start_date = CASE WHEN student_subjects.end_date IS NOT NULL OR student_subjects.start_date IS NULL THEN excluded.start_date ELSE student_subjects.start_date END, end_date = NULL`).bind(sid, course.subject, t)),
+    ]);
+    return { ok: true, count: ids.length, added: added.length };
   },
   OM
 );
@@ -953,6 +1066,8 @@ route('POST', '/api/payments/import/preview', async ({ db, body }) => {
       (SELECT IFNULL(SUM(p.amount), 0) FROM payments p WHERE p.student_id = s.id AND p.kind = '교재비') AS book_paid
      FROM students s`
   );
+  const disc = await discountTotals(db);
+  for (const s of students) s.fee_month = Math.max(0, s.fee_month - (disc.get(s.id) || 0));
   const paidRows = await q.all(db, `SELECT student_id, month, SUM(amount) AS paid FROM payments WHERE kind = '교육비' AND month IS NOT NULL GROUP BY student_id, month`);
   const paidOf = new Map(paidRows.map((r) => [`${r.student_id}|${r.month}`, r.paid]));
   const refs = new Set((await q.all(db, `SELECT ref FROM payments WHERE ref LIKE 'ys|%'`)).map((r) => r.ref.replace(/#\d+$/, '')));
@@ -979,9 +1094,13 @@ route('POST', '/api/payments/import/preview', async ({ db, body }) => {
       let score = 0;
       const why = [];
       if (memo && s.name && memo.includes(s.name)) (score += 6), why.push('메모에 학생 이름');
+      // 통장 입금자처럼 이름이 다 보일 때 (가림표 * 없음)
+      const full = payer.mask && !payer.mask.includes('*') ? payer.mask.replace(/\s/g, '') : null;
+      if (full && full === s.name) (score += 6), why.push('입금자 = 학생 이름');
       for (const [who, nm, ph] of [['어머니', s.mother_name, s.mother_phone], ['아버지', s.father_name, s.father_phone]]) {
         const phoneHit = payer.last4 && last4(ph) === payer.last4;
         const nameHit = payer.re && nm && payer.re.test(nm);
+        if (full && nm && full === nm.replace(/\s/g, '') && !phoneHit) { score += 5; why.push(`입금자 = ${who} ${nm}`); continue; }
         if (phoneHit && nameHit) (score += 5), why.push(`${who} ${nm}·뒷자리 일치`);
         else if (phoneHit) (score += 3), why.push(`${who} 뒷자리 일치`);
         else if (nameHit && payer.mask.length >= 2) (score += 1), why.push(`${who} 이름 비슷함`);
@@ -1007,7 +1126,7 @@ route('POST', '/api/payments/import/preview', async ({ db, body }) => {
     if (top && (/교재|책/.test(memo) || (top.book_due > 0 && amount === top.book_due))) kind = '교재비';
     return {
       i, ref, date, time: String(r.date || '').slice(11, 16), payer: String(r.payer || ''), method_raw: String(r.method || ''),
-      method: /카드/.test(String(r.method || '')) ? '카드' : '지역화폐', amount, memo, month, state, kind,
+      method: /카드/.test(String(r.method || '')) ? '카드' : /계좌|이체|입금|통장|은행/.test(String(r.method || '')) ? '계좌이체' : '지역화폐', amount, memo, month, state, kind,
       student_id: state === 'sure' || state === 'check' ? top.student_id : null,
       siblings: tied.length > 1,
       candidates: cands.slice(0, 6),
@@ -1034,11 +1153,203 @@ route('POST', '/api/payments/import', async ({ db, user, body }) => {
     exist.add(ref);
     stmts.push(
       db.prepare('INSERT INTO payments (student_id, kind, month, amount, paid_date, method, memo, created_by, ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .bind(Number(it.student_id), kind, kind === '교육비' ? month : null, amount, isDate(it.paid_date) ? it.paid_date : today(), it.method === '카드' ? '카드' : '지역화폐', clean(it.memo), user.id, ref)
+        .bind(Number(it.student_id), kind, kind === '교육비' ? month : null, amount, isDate(it.paid_date) ? it.paid_date : today(), ['카드', '계좌이체'].includes(it.method) ? it.method : '지역화폐', clean(it.memo), user.id, ref)
     );
   }
   if (stmts.length) await db.batch(stmts);
   return { ok: true, added: stmts.length, skipped };
+}, OWNER);
+
+// ───────── 교재 관리 ─────────
+const BOOK_LEVELS = ['유아', '초등', '중등', '고등'];
+function suppliersOf(settings) {
+  try { const a = JSON.parse(settings.book_suppliers); return Array.isArray(a) ? a : []; } catch { return []; }
+}
+const BOOK_STOCK_SQL = `
+  (SELECT IFNULL(SUM(qty), 0) FROM book_stock st WHERE st.book_id = bk.id) AS stock_in,
+  (SELECT IFNULL(SUM(qty), 0) FROM book_deliveries d WHERE d.book_id = bk.id) AS delivered`;
+
+route('GET', '/api/catalog', async ({ db, query }) => {
+  const where = [];
+  const params = [];
+  if (query.level) where.push('bk.level = ?'), params.push(query.level);
+  if (query.subject) where.push('bk.subject = ?'), params.push(query.subject);
+  if (query.supplier) where.push('bk.supplier = ?'), params.push(query.supplier);
+  if (query.q) where.push('bk.name LIKE ?'), params.push(`%${query.q}%`);
+  if (query.active !== 'all') where.push('bk.active = 1');
+  const books = await q.all(
+    db,
+    `SELECT bk.id, bk.level, bk.subject, bk.supplier, bk.name, bk.list_price, bk.sale_price, bk.image_v, bk.memo, bk.active, ${BOOK_STOCK_SQL},
+      (SELECT MAX(date) FROM book_stock st WHERE st.book_id = bk.id) AS last_in
+     FROM books bk ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+     ORDER BY bk.active DESC, CASE bk.level WHEN '유아' THEN 0 WHEN '초등' THEN 1 WHEN '중등' THEN 2 ELSE 3 END, bk.subject, bk.name`,
+    ...params
+  );
+  for (const b of books) b.stock = b.stock_in - b.delivered;
+  return { books, levels: BOOK_LEVELS, subjects: SUBJECTS, suppliers: suppliersOf(await getSettings(db)) };
+});
+
+route('GET', '/api/catalog/:id', async ({ db, user, params }) => {
+  const book = await q.first(db, `SELECT bk.id, bk.level, bk.subject, bk.supplier, bk.name, bk.list_price, bk.sale_price, bk.image_v, bk.memo, bk.active, ${BOOK_STOCK_SQL} FROM books bk WHERE bk.id = ?`, Number(params.id));
+  if (!book) fail(404, '교재를 찾을 수 없어요');
+  book.stock = book.stock_in - book.delivered;
+  const stock = await q.all(db, `SELECT st.*, u.name AS created_by_name FROM book_stock st LEFT JOIN users u ON u.id = st.created_by WHERE st.book_id = ? ORDER BY st.date DESC, st.id DESC`, book.id);
+  const sc = studentScope(user);
+  const deliveries = await q.all(
+    db,
+    `SELECT d.id, d.date, d.qty, d.price, d.memo, s.id AS student_id, s.name AS student_name, s.school, s.grade, u.name AS given_by_name
+     FROM book_deliveries d JOIN students s ON s.id = d.student_id LEFT JOIN users u ON u.id = d.given_by
+     WHERE d.book_id = ? AND ${sc.sql} ORDER BY d.date DESC, d.id DESC`,
+    book.id, ...sc.params
+  );
+  return { book, stock, deliveries };
+});
+
+function bookValues(body, base = {}) {
+  const v = { ...base };
+  if ('name' in body) v.name = need(body.name, '교재명');
+  if ('level' in body) v.level = BOOK_LEVELS.includes(body.level) ? body.level : null;
+  if ('subject' in body) v.subject = SUBJECTS.includes(body.subject) ? body.subject : null;
+  if ('supplier' in body) v.supplier = clean(body.supplier);
+  if ('list_price' in body) v.list_price = body.list_price === '' || body.list_price == null ? null : money(body.list_price);
+  if ('sale_price' in body) v.sale_price = body.sale_price === '' || body.sale_price == null ? null : money(body.sale_price);
+  if ('memo' in body) v.memo = clean(body.memo);
+  if ('active' in body) v.active = body.active ? 1 : 0;
+  if (!v.name) fail(400, '교재명을 입력해 주세요');
+  return v;
+}
+const BOOK_FIELDS = ['level', 'subject', 'supplier', 'name', 'list_price', 'sale_price', 'memo', 'active'];
+route('POST', '/api/catalog', async ({ db, user, body }) => {
+  const v = bookValues(body, { active: 1 });
+  const r = await q.run(db, `INSERT INTO books (${BOOK_FIELDS.join(',')}) VALUES (${BOOK_FIELDS.map(() => '?').join(',')})`, ...BOOK_FIELDS.map((f) => v[f] ?? null));
+  const id = r.meta.last_row_id;
+  // 처음 입고 수량을 같이 적었으면 입고도 기록
+  const qty = Math.trunc(Number(body.first_qty) || 0);
+  if (qty) await q.run(db, 'INSERT INTO book_stock (book_id, date, qty, supplier, created_by) VALUES (?, ?, ?, ?, ?)', id, isDate(body.first_date) ? body.first_date : today(), qty, v.supplier, user.id);
+  return { ok: true, id };
+}, OM);
+route('PATCH', '/api/catalog/:id', async ({ db, body, params }) => {
+  const cur = await q.first(db, 'SELECT * FROM books WHERE id = ?', Number(params.id));
+  if (!cur) fail(404, '교재를 찾을 수 없어요');
+  const v = bookValues(body, cur);
+  await q.run(db, `UPDATE books SET ${BOOK_FIELDS.map((f) => `${f} = ?`).join(', ')} WHERE id = ?`, ...BOOK_FIELDS.map((f) => v[f] ?? null), cur.id);
+  return { ok: true };
+}, OM);
+route('PUT', '/api/catalog/:id/image', async ({ db, body, params }) => {
+  const data = String(body.data || '');
+  if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(data)) fail(400, '사진 파일(jpg, png)만 올릴 수 있어요');
+  if (data.length > PHOTO_MAX) fail(400, '사진이 너무 커요. 다른 사진으로 해 주세요');
+  const v = Date.now();
+  await q.run(db, 'UPDATE books SET image = ?, image_v = ? WHERE id = ?', data, v, Number(params.id));
+  return { ok: true, image_v: v };
+}, OM);
+route('DELETE', '/api/catalog/:id/image', async ({ db, params }) => {
+  await q.run(db, 'UPDATE books SET image = NULL, image_v = NULL WHERE id = ?', Number(params.id));
+  return { ok: true };
+}, OM);
+route('GET', '/api/book-images/:id', async ({ db, params }) => {
+  const r = await q.first(db, 'SELECT image FROM books WHERE id = ?', Number(params.id));
+  if (!r || !r.image) fail(404, '사진이 없어요');
+  return photoResponse(r.image);
+});
+route('POST', '/api/catalog/:id/stock', async ({ db, user, body, params }) => {
+  const bk = await q.first(db, 'SELECT * FROM books WHERE id = ?', Number(params.id));
+  if (!bk) fail(404, '교재를 찾을 수 없어요');
+  const qty = Math.trunc(Number(body.qty) || 0);
+  if (!qty) fail(400, '수량을 입력해 주세요 (반품은 -2처럼 적어요)');
+  const r = await q.run(db, 'INSERT INTO book_stock (book_id, date, qty, supplier, memo, created_by) VALUES (?, ?, ?, ?, ?, ?)', bk.id, isDate(body.date) ? body.date : today(), qty, clean(body.supplier) || bk.supplier, clean(body.memo), user.id);
+  return { ok: true, id: r.meta.last_row_id };
+}, OM);
+route('DELETE', '/api/book-stock/:id', async ({ db, params }) => {
+  await q.run(db, 'DELETE FROM book_stock WHERE id = ?', Number(params.id));
+  return { ok: true };
+}, OM);
+// 여러 학생에게 한 번에 배부 (반 전체 등)
+route('POST', '/api/catalog/:id/deliver', async ({ db, user, body, params }) => {
+  const bk = await q.first(db, 'SELECT * FROM books WHERE id = ?', Number(params.id));
+  if (!bk) fail(404, '교재를 찾을 수 없어요');
+  if (!(await viewOf(db, user)).books) fail(403, '교재 배부를 기록할 권한이 없어요');
+  const ids = [...new Set((body.student_ids || []).map(Number).filter(Boolean))];
+  if (!ids.length) fail(400, '학생을 골라 주세요');
+  for (const sid of ids) if (!(await canSeeStudent(db, user, sid))) fail(403, '담당 학생이 아닌 학생이 있어요');
+  const price = body.price === '' || body.price == null ? bk.sale_price ?? bk.list_price ?? null : money(body.price);
+  const date = isDate(body.date) ? body.date : today();
+  await db.batch(ids.map((sid) => db.prepare('INSERT INTO book_deliveries (student_id, book_id, date, title, subject, qty, price, memo, given_by) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)').bind(sid, bk.id, date, bk.name, bk.subject, price, clean(body.memo), user.id)));
+  return { ok: true, count: ids.length };
+});
+
+// ───────── 청구서 ─────────
+// 이번 달 교육비(할인 반영) 남은 금액 + 교재비 미납을 학부모님께 문자로 보냅니다.
+async function billRows(db, month) {
+  const rows = await q.all(
+    db,
+    `SELECT s.id, s.name, s.school, s.grade, s.photo_v, s.father_phone, s.mother_phone, s.sms_target,
+      (SELECT IFNULL(SUM(IFNULL(e.fee, c.fee)), 0) FROM enrollments e JOIN courses c ON c.id = e.course_id WHERE e.student_id = s.id AND c.active = 1) AS gross,
+      (SELECT IFNULL(SUM(p.amount), 0) FROM payments p WHERE p.student_id = s.id AND p.kind = '교육비' AND p.month = ?) AS paid,
+      (SELECT IFNULL(SUM(IFNULL(b.price, 0) * b.qty), 0) FROM book_deliveries b WHERE b.student_id = s.id) AS book_total,
+      (SELECT IFNULL(SUM(p.amount), 0) FROM payments p WHERE p.student_id = s.id AND p.kind = '교재비') AS book_paid,
+      (SELECT group_concat(b.title || CASE WHEN b.qty > 1 THEN ' x' || b.qty ELSE '' END, ', ') FROM book_deliveries b WHERE b.student_id = s.id AND b.price > 0 AND b.date >= ?) AS recent_books
+     FROM students s WHERE s.status = '재원' ORDER BY s.name`,
+    month, `${month}-01`
+  );
+  const disc = await discountTotals(db);
+  const last = new Map((await q.all(db, `SELECT student_id, MAX(id) AS id FROM bills WHERE month = ? GROUP BY student_id`, month)).map((r) => [r.student_id, r.id]));
+  const lastBills = last.size ? new Map((await q.all(db, `SELECT * FROM bills WHERE id IN (${[...last.values()].join(',')})`)).map((b) => [b.student_id, b])) : new Map();
+  const counts = new Map((await q.all(db, `SELECT student_id, COUNT(*) AS n FROM bills WHERE month = ? GROUP BY student_id`, month)).map((r) => [r.student_id, r.n]));
+  return rows.map((r) => {
+    const discount = disc.get(r.id) || 0;
+    const fee = Math.max(0, r.gross - discount);
+    const tuition_due = Math.max(0, fee - r.paid);
+    const book_due = Math.max(0, r.book_total - r.book_paid);
+    const b = lastBills.get(r.id);
+    return {
+      id: r.id, name: r.name, school: r.school, grade: r.grade, photo_v: r.photo_v, has_phone: recipients(r).length > 0,
+      gross: r.gross, discount, fee, paid: r.paid, tuition_due, book_due, recent_books: r.recent_books,
+      total: tuition_due + book_due,
+      last_bill: b ? { sent_at: b.sent_at, total: b.total, status: b.status } : null,
+      bill_count: counts.get(r.id) || 0,
+      _r: r,
+    };
+  });
+}
+route('GET', '/api/bills', async ({ db, query }) => {
+  const month = /^\d{4}-\d{2}$/.test(query.month || '') ? query.month : today().slice(0, 7);
+  const rows = (await billRows(db, month)).map(({ _r, ...x }) => x);
+  const s = await getSettings(db);
+  return { month, rows, bank_account: s.bank_account || '' };
+}, OWNER);
+route('POST', '/api/bills/send', async ({ db, env, user, body }) => {
+  const month = /^\d{4}-\d{2}$/.test(body.month || '') ? body.month : today().slice(0, 7);
+  const ids = new Set((body.student_ids || []).map(Number));
+  if (!ids.size) fail(400, '청구서를 보낼 학생을 골라 주세요');
+  const settings = await getSettings(db);
+  const mm = Number(month.slice(5));
+  const targets = (await billRows(db, month)).filter((r) => ids.has(r.id) && r.total > 0);
+  if (!targets.length) fail(400, '보낼 금액이 있는 학생이 없어요 (이미 다 냈어요)');
+  const msgs = [];
+  const billInfo = [];
+  for (const t of targets) {
+    const lines = [];
+    if (t.tuition_due) lines.push(`· ${mm}월 교육비 ${t.tuition_due.toLocaleString('ko-KR')}원${t.discount ? ` (할인 ${t.discount.toLocaleString('ko-KR')}원 적용)` : ''}${t.paid ? ` (이미 ${t.paid.toLocaleString('ko-KR')}원 납부)` : ''}`);
+    if (t.book_due) lines.push(`· 교재비 ${t.book_due.toLocaleString('ko-KR')}원${t.recent_books ? ` (${t.recent_books})` : ''}`);
+    const text = fillTemplate(settings.tpl_bill, { 학원: settings.academy_name, 학생: t.name, 월: mm, 내역: lines.join('\n'), 합계: `${t.total.toLocaleString('ko-KR')}원`, 계좌: settings.bank_account || '(학원으로 문의해 주세요)' });
+    const parts = messagesFor(t._r, { kind: '청구서', text, ref_type: 'bill' });
+    msgs.push(...parts);
+    billInfo.push({ t, lines, n: parts.length });
+  }
+  const results = await sendMessages(env, db, settings, user.id, msgs);
+  let k = 0;
+  const stmts = [];
+  const out = [];
+  for (const bi of billInfo) {
+    const rs = results.slice(k, k + bi.n);
+    k += bi.n;
+    const status = rs.some((x) => x.status === '발송') ? '발송' : rs.some((x) => x.status === '미리보기') ? '미리보기' : '실패';
+    stmts.push(db.prepare('INSERT INTO bills (student_id, month, items, total, status, sent_by) VALUES (?, ?, ?, ?, ?, ?)').bind(bi.t.id, month, JSON.stringify({ tuition: bi.t.tuition_due, book: bi.t.book_due, discount: bi.t.discount, lines: bi.lines }), bi.t.total, status, user.id));
+    out.push({ student_id: bi.t.id, name: bi.t.name, total: bi.t.total, status, error: (rs.find((x) => x.error) || {}).error || null });
+  }
+  await db.batch(stmts);
+  return { ok: true, sent: out.filter((x) => x.status !== '실패').length, failed: out.filter((x) => x.status === '실패').length, results: out };
 }, OWNER);
 
 // ───────── 수업 일지 ─────────
@@ -1460,7 +1771,7 @@ route('GET', '/api/settings', async ({ db, env, user }) => {
   const s = await getSettings(db);
   const view = await viewOf(db, { role: 'teacher' });
   if (user.role !== 'owner') return { academy_name: s.academy_name, mottos: parseMottos(s), teacher_view: view };
-  return { ...s, mottos: parseMottos(s), teacher_view: view, teacher_view_labels: TEACHER_VIEW_LABELS, solapi_ready: solapiReady(env) };
+  return { ...s, mottos: parseMottos(s), teacher_view: view, teacher_view_labels: TEACHER_VIEW_LABELS, solapi_ready: solapiReady(env), discount_items: discountItems(s), book_suppliers: suppliersOf(s) };
 });
 
 route('PUT', '/api/settings', async ({ db, env, body }) => {
@@ -1469,6 +1780,15 @@ route('PUT', '/api/settings', async ({ db, env, body }) => {
   if ('mottos' in body) set.push(['mottos', JSON.stringify((body.mottos || []).map((m) => String(m).trim()).filter(Boolean).slice(0, 3))]);
   if ('tpl_attendance' in body) set.push(['tpl_attendance', need(body.tpl_attendance, '출결 문자 문구')]);
   if ('tpl_feedback' in body) set.push(['tpl_feedback', need(body.tpl_feedback, '피드백 문자 문구')]);
+  if ('discount_items' in body) {
+    const items = (body.discount_items || [])
+      .map((x, i) => ({ id: clean(x.id) || `d${Date.now().toString(36)}${i}`, name: clean(x.name), amount: money(x.amount) }))
+      .filter((x) => x.name);
+    set.push(['discount_items', JSON.stringify(items)]);
+  }
+  if ('book_suppliers' in body) set.push(['book_suppliers', JSON.stringify((body.book_suppliers || []).map(clean).filter(Boolean))]);
+  if ('bank_account' in body) set.push(['bank_account', clean(body.bank_account) || '']);
+  if ('tpl_bill' in body) set.push(['tpl_bill', need(body.tpl_bill, '청구서 문구')]);
   if ('teacher_view' in body) {
     const tv = body.teacher_view || {};
     set.push(['teacher_view', JSON.stringify(Object.fromEntries(Object.keys(TEACHER_VIEW_LABELS).map((k) => [k, !!tv[k]])))]);
