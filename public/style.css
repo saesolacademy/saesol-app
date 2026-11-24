@@ -272,3 +272,11 @@ table.kv td:first-child { width: 110px; white-space: nowrap; }
   table.list:not(.kv) td details { white-space: normal; min-width: 200px; }
   .profile { justify-content: center; text-align: left; }
 }
+
+/* ───── 요일별 시간표 ───── */
+.timetable { width: 100%; border-collapse: collapse; margin-top: 6px; }
+.timetable td { padding: 4px 6px 4px 0; }
+.timetable td:first-child { width: 70px; }
+.timetable td.muted { width: 14px; text-align: center; }
+.timetable tr:not(.on) input[type=time] { opacity: .45; }
+.timetable tr.on td:first-child b { color: var(--brand); }

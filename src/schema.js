@@ -56,6 +56,7 @@ export const SCHEMA = [
     subject TEXT NOT NULL,
     teacher_id INTEGER,
     days TEXT,
+    times TEXT,
     start_time TEXT,
     end_time TEXT,
     room TEXT,
@@ -216,6 +217,7 @@ const MIGRATIONS = [
   'ALTER TABLE users ADD COLUMN photo_v INTEGER',
   'ALTER TABLE users ADD COLUMN staff_role TEXT',
   'ALTER TABLE courses ADD COLUMN fee INTEGER',
+  'ALTER TABLE courses ADD COLUMN times TEXT',
   'ALTER TABLE enrollments ADD COLUMN fee INTEGER',
   'ALTER TABLE consultations ADD COLUMN subject TEXT',
 ];

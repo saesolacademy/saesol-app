@@ -95,6 +95,31 @@
     input.click();
   }
 
+  // 반 시간표 글자: "월·수 18:00~20:00 / 금 19:00~21:00"
+  const DAYS = ['월', '화', '수', '목', '금', '토', '일'];
+  function courseTimes(c) {
+    let t = {};
+    try { t = c.times ? JSON.parse(c.times) : {}; } catch {}
+    const days = (c.days || '').split(',').filter(Boolean);
+    const out = {};
+    for (const d of DAYS) {
+      if (t[d]) out[d] = { start: t[d].start || '', end: t[d].end || '' };
+      else if (days.includes(d)) out[d] = { start: c.start_time || '', end: c.end_time || '' };
+    }
+    return out;
+  }
+  function scheduleText(c) {
+    const t = courseTimes(c);
+    const groups = [];
+    for (const d of DAYS) {
+      if (!t[d]) continue;
+      const span = t[d].start ? `${t[d].start}${t[d].end ? '~' + t[d].end : ''}` : '';
+      const g = groups.find((x) => x.span === span);
+      if (g) g.days.push(d); else groups.push({ span, days: [d] });
+    }
+    return groups.map((g) => `${g.days.join('·')} ${g.span}`.trim()).join(' / ') || '-';
+  }
+
   const errBox = (e) => `<div class="card empty">😥 ${h(e.message || e)}</div>`;
 
   // ───────── 모달 ─────────
@@ -295,7 +320,7 @@
           <h2>오늘 수업</h2>
           ${s.today_courses.length ? `<table class="list"><tbody>${s.today_courses.map((c) => `
             <tr class="click" data-go="#/attendance?course=${c.id}">
-              <td style="width:90px">${h(c.start_time || '')}</td>
+              <td style="width:110px">${h(c.start_time || '')}${c.end_time ? `<div class="small muted">~${h(c.end_time)}</div>` : ''}</td>
               <td><b>${h(c.name)}</b><div class="small muted row" style="gap:6px">${h(c.subject)} · ${c.teacher_name ? withAvatar(c.teacher_id, c.teacher_photo_v, c.teacher_name, 18) : '담당 없음'}${c.room ? ' · ' + h(c.room) : ''}</div></td>
               <td style="text-align:right">${c.checked_count ? `<span class="chip green">출결 ${c.checked_count}/${c.student_count}</span>` : '<span class="btn sm">출결하기</span>'}</td>
             </tr>`).join('')}</tbody></table>` : '<div class="empty">오늘은 수업이 없어요</div>'}
@@ -802,7 +827,7 @@
         <div class="card"><h2>수강 과목${v.fees ? ' · 수강료' : ''}</h2>
           ${d.courses.length ? `<table class="list"><tbody>${d.courses.map((c) => `
             <tr style="${c.active ? '' : 'opacity:.5'}"><td><span class="chip">${h(c.subject)}</span></td>
-              <td><b>${h(c.name)}</b><div class="small muted row" style="gap:6px">${withAvatar(c.teacher_id, c.teacher_photo_v, c.teacher_name, 18)} ${h(c.days || '')} ${h(c.start_time || '')}</div></td>
+              <td><b>${h(c.name)}</b><div class="small muted row" style="gap:6px">${withAvatar(c.teacher_id, c.teacher_photo_v, c.teacher_name, 18)} ${h(scheduleText(c))}</div></td>
               ${v.fees ? `<td style="text-align:right;white-space:nowrap">${won(c.fee)}${c.fee_custom ? '<div class="small muted">개별 금액</div>' : ''}${own ? ` <button class="btn sm no-print" data-fee="${c.id}">수정</button>` : ''}</td>` : ''}</tr>`).join('')}</tbody></table>
             ${v.fees ? `<div class="row mt"><span class="muted">월 수강료 합계</span><span class="space"></span><b style="font-size:18px">${won(d.monthly_fee)}</b></div>` : ''}`
             : `<div class="empty">아직 반에 들어가 있지 않아요${edit ? ' — [반 관리]에서 넣어 주세요' : ''}</div>`}
@@ -919,14 +944,14 @@
         <tbody>${courses.map((c) => `<tr style="${c.active ? '' : 'opacity:.5'}">
           <td><b>${h(c.name)}</b>${c.active ? '' : ' <span class="chip">종료</span>'}${c.room ? `<div class="small muted">${h(c.room)}</div>` : ''}</td>
           <td>${h(c.subject)}</td><td>${c.teacher_name ? withAvatar(c.teacher_id, c.teacher_photo_v, c.teacher_name) : '-'}</td>
-          <td>${h(c.days || '-')} ${h(c.start_time || '')}${c.end_time ? '~' + h(c.end_time) : ''}</td>
+          <td class="small">${h(scheduleText(c))}</td>
           ${own ? `<td>${c.fee != null ? Number(c.fee).toLocaleString('ko-KR') + '원' : '-'}</td>` : ''}
           <td>${c.student_count}명</td>
           <td style="text-align:right;white-space:nowrap"><button class="btn sm" data-stu="${c.id}">학생 넣기</button>${own ? ` <button class="btn sm" data-edit="${c.id}">고치기</button>` : ''}</td></tr>`).join('')}</tbody>
       </table></div>${courses.length ? '' : '<div class="empty">아직 반이 없어요</div>'}</div>`;
     const byId = new Map(courses.map((c) => [c.id, c]));
     const form = (c = {}) => {
-      const days = (c.days || '').split(',');
+      const times = courseTimes(c);
       return `
         <div class="grid g2">
           <label class="field"><span>반 이름</span><input type="text" name="name" value="${h(c.name)}" required placeholder="예: 중2 수학 A"></label>
@@ -935,22 +960,39 @@
           <label class="field"><span>강의실</span><input type="text" name="room" value="${h(c.room)}" placeholder="예: 1관 201호"></label>
           <label class="field"><span>월 수강료 (기본)</span><input type="text" name="fee" inputmode="numeric" value="${h(c.fee ?? '')}" placeholder="예: 320000"></label>
         </div>
-        <label class="field"><span>수업 요일</span><div class="days">${['월', '화', '수', '목', '금', '토', '일'].map((d) => `<label><input type="checkbox" name="day_${d}" ${days.includes(d) ? 'checked' : ''}>${d}</label>`).join('')}</div></label>
-        <div class="grid g2">
-          <label class="field"><span>시작 시간</span><input type="time" name="start_time" value="${h(c.start_time)}"></label>
-          <label class="field"><span>끝 시간</span><input type="time" name="end_time" value="${h(c.end_time)}"></label>
+        <div class="field"><span class="small muted">수업 요일과 시간 — 요일에 체크하고 그 요일의 시간을 적어 주세요</span>
+          <table class="timetable">${DAYS.map((d) => `<tr data-day="${d}" class="${times[d] ? 'on' : ''}">
+            <td><label class="inline-check"><input type="checkbox" name="day_${d}" ${times[d] ? 'checked' : ''}> <b>${d}</b></label></td>
+            <td><input type="time" name="start_${d}" value="${h(times[d] ? times[d].start : '')}"></td><td class="muted">~</td>
+            <td><input type="time" name="end_${d}" value="${h(times[d] ? times[d].end : '')}"></td></tr>`).join('')}</table>
+          <button type="button" class="btn sm" data-copytime style="margin-top:6px">⤵ 첫 번째 요일 시간을 체크한 요일에 모두 똑같이 넣기</button>
         </div>
         ${c.id ? `<label class="inline-check"><input type="checkbox" name="active" ${c.active ? 'checked' : ''}> 운영 중인 반 (끄면 종료된 반)</label>` : ''}`;
     };
     const toBody = (d, editing) => ({
-      name: d.name, subject: d.subject, teacher_id: d.teacher_id || null, room: d.room, start_time: d.start_time, end_time: d.end_time, fee: d.fee,
-      days: ['월', '화', '수', '목', '금', '토', '일'].filter((x) => d['day_' + x]).join(','),
+      name: d.name, subject: d.subject, teacher_id: d.teacher_id || null, room: d.room, fee: d.fee,
+      times: Object.fromEntries(DAYS.filter((x) => d['day_' + x]).map((x) => [x, { start: d['start_' + x] || null, end: d['end_' + x] || null }])),
       ...(editing ? { active: !!d.active } : {}),
     });
-    if (own) $('#add').onclick = () => modal({ title: '반 만들기', wide: true, body: form(), onSubmit: async (d) => { await api('POST', '/api/courses', toBody(d)); toast('반을 만들었어요'); reload(); } });
+    // 시간표 칸 동작: 시간을 적으면 그 요일 자동 체크, "똑같이 넣기" 버튼
+    const wireTimes = (f) => {
+      $$('.timetable tr', f).forEach((tr) => {
+        const box = $('input[type=checkbox]', tr);
+        const sync = () => tr.classList.toggle('on', box.checked);
+        box.onchange = sync;
+        $$('input[type=time]', tr).forEach((i) => (i.oninput = () => { if (i.value) { box.checked = true; sync(); } }));
+      });
+      $('[data-copytime]', f).onclick = () => {
+        const rows = $$('.timetable tr', f).filter((tr) => $('input[type=checkbox]', tr).checked);
+        if (!rows.length) return toast('먼저 요일에 체크하고 첫 요일 시간을 적어 주세요');
+        const [st, en] = $$('input[type=time]', rows[0]).map((i) => i.value);
+        rows.slice(1).forEach((tr) => { const [a, b] = $$('input[type=time]', tr); a.value = st; b.value = en; });
+      };
+    };
+    if (own) $('#add').onclick = () => modal({ title: '반 만들기', wide: true, body: form(), onOpen: wireTimes, onSubmit: async (d) => { await api('POST', '/api/courses', toBody(d)); toast('반을 만들었어요'); reload(); } });
     $$('[data-edit]', el).forEach((b) => (b.onclick = () => {
       const c = byId.get(Number(b.dataset.edit));
-      modal({ title: '반 고치기', wide: true, body: form(c), onSubmit: async (d) => { await api('PATCH', `/api/courses/${c.id}`, toBody(d, true)); toast('저장했어요'); reload(); } });
+      modal({ title: '반 고치기', wide: true, body: form(c), onOpen: wireTimes, onSubmit: async (d) => { await api('PATCH', `/api/courses/${c.id}`, toBody(d, true)); toast('저장했어요'); reload(); } });
     }));
     $$('[data-stu]', el).forEach((b) => (b.onclick = async () => {
       const c = byId.get(Number(b.dataset.stu));

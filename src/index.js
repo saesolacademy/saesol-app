@@ -393,7 +393,7 @@ route('GET', '/api/students/:id', async ({ db, user, params }) => {
   const student = shapeStudent(raw, view);
   const month = today().slice(0, 7);
   const jobs = {
-    courses: q.all(db, `SELECT c.id, c.name, c.subject, c.days, c.start_time, c.teacher_id, c.fee AS course_fee, e.fee AS own_fee, c.active, u.name AS teacher_name, u.photo_v AS teacher_photo_v
+    courses: q.all(db, `SELECT c.id, c.name, c.subject, c.days, c.times, c.start_time, c.end_time, c.teacher_id, c.fee AS course_fee, e.fee AS own_fee, c.active, u.name AS teacher_name, u.photo_v AS teacher_photo_v
                         FROM enrollments e JOIN courses c ON c.id = e.course_id LEFT JOIN users u ON u.id = c.teacher_id WHERE e.student_id = ? ORDER BY c.active DESC, c.subject`, id),
     attendance: q.all(db, `SELECT a.date, a.status, a.memo, c.name AS course_name, c.subject FROM attendance a JOIN courses c ON c.id = a.course_id WHERE a.student_id = ? AND a.date >= ? ORDER BY a.date DESC`, id, addDays(today(), -60)),
     feedbacks: q.all(db, `SELECT f.id, f.content, f.status, f.sent_at, f.updated_at, p.title AS period_title, c.name AS course_name, c.subject FROM feedbacks f JOIN feedback_periods p ON p.id = f.period_id JOIN courses c ON c.id = f.course_id WHERE f.student_id = ? AND f.content != '' ORDER BY p.start_date DESC`, id),
@@ -622,9 +622,52 @@ route('GET', '/api/courses/:id', async ({ db, user, params }) => {
   return { course, students };
 });
 
+// 요일별 수업 시간: { "월": { start: "18:00", end: "20:00" }, "수": { start: "19:00", end: "21:00" } }
+const isTime = (t) => /^([01]\d|2[0-3]):[0-5]\d$/.test(String(t || ''));
+function parseTimes(raw) {
+  if (!raw) return {};
+  try {
+    const o = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return o && typeof o === 'object' ? o : {};
+  } catch {
+    return {};
+  }
+}
+// 그 요일의 시작·끝 시간 (요일별 시간이 없으면 반 기본 시간)
+function timeOn(c, wd) {
+  const t = parseTimes(c.times)[wd];
+  return { start: (t && t.start) || c.start_time || '', end: (t && t.end) || c.end_time || '' };
+}
+function withTodayTime(list, wd) {
+  for (const c of list) {
+    const t = timeOn(c, wd);
+    c.start_time = t.start;
+    c.end_time = t.end;
+  }
+  return list.sort((a, b) => (a.start_time || '99').localeCompare(b.start_time || '99') || a.name.localeCompare(b.name));
+}
+
 function courseValues(body, base = {}) {
   const v = { ...base };
   for (const f of ['name', 'subject', 'days', 'start_time', 'end_time', 'room']) if (f in body) v[f] = clean(body[f]);
+  if ('times' in body) {
+    const src = parseTimes(body.times);
+    const times = {};
+    for (const d of WEEK) {
+      if (!src[d]) continue;
+      const start = isTime(src[d].start) ? src[d].start : null;
+      const end = isTime(src[d].end) ? src[d].end : null;
+      if (start && end && end <= start) fail(400, `${d}요일 끝 시간이 시작 시간보다 빨라요`);
+      times[d] = { start, end };
+    }
+    const order = ['월', '화', '수', '목', '금', '토', '일'];
+    const days = order.filter((d) => times[d]);
+    v.days = days.join(',');
+    v.times = days.length ? JSON.stringify(Object.fromEntries(days.map((d) => [d, times[d]]))) : null;
+    // 예전 칸(대표 시간)도 첫 요일 시간으로 맞춰 둡니다
+    v.start_time = days.length ? times[days[0]].start : null;
+    v.end_time = days.length ? times[days[0]].end : null;
+  }
   if ('fee' in body) v.fee = body.fee === '' || body.fee == null ? null : money(body.fee);
   if ('teacher_id' in body) v.teacher_id = body.teacher_id ? Number(body.teacher_id) : null;
   if ('active' in body) v.active = body.active ? 1 : 0;
@@ -633,7 +676,7 @@ function courseValues(body, base = {}) {
   if (v.days) v.days = v.days.split(/[,\s]+/).filter((d) => WEEK.includes(d)).join(',');
   return v;
 }
-const COURSE_FIELDS = ['name', 'subject', 'teacher_id', 'days', 'start_time', 'end_time', 'room', 'fee', 'active'];
+const COURSE_FIELDS = ['name', 'subject', 'teacher_id', 'days', 'times', 'start_time', 'end_time', 'room', 'fee', 'active'];
 
 route(
   'POST',
@@ -682,7 +725,7 @@ route('GET', '/api/attendance/today', async ({ db, user, query }) => {
   if (!seesAll(user)) (mine = 'AND c.teacher_id = ?'), params.push(user.id);
   const courses = await q.all(
     db,
-    `SELECT c.id, c.name, c.subject, c.start_time, c.end_time, c.room, c.teacher_id, u.name AS teacher_name, u.photo_v AS teacher_photo_v,
+    `SELECT c.id, c.name, c.subject, c.start_time, c.end_time, c.times, c.room, c.teacher_id, u.name AS teacher_name, u.photo_v AS teacher_photo_v,
       (SELECT COUNT(*) FROM enrollments e JOIN students s ON s.id = e.student_id WHERE e.course_id = c.id AND s.status = '재원') AS student_count,
       (SELECT COUNT(*) FROM attendance a WHERE a.course_id = c.id AND a.date = ?) AS checked_count
      FROM courses c LEFT JOIN users u ON u.id = c.teacher_id
@@ -690,7 +733,7 @@ route('GET', '/api/attendance/today', async ({ db, user, query }) => {
      ORDER BY c.start_time, c.name`,
     ...params
   );
-  return { date, weekday: wd, courses };
+  return { date, weekday: wd, courses: withTodayTime(courses, wd) };
 });
 
 route('GET', '/api/attendance', async ({ db, user, query }) => {
@@ -1100,7 +1143,7 @@ route('GET', '/api/dashboard', async ({ db, user }) => {
   const wd = weekdayOf(now);
   const todayCourses = await q.all(
     db,
-    `SELECT c.id, c.name, c.subject, c.start_time, c.end_time, c.room, c.teacher_id, u.name AS teacher_name, u.photo_v AS teacher_photo_v,
+    `SELECT c.id, c.name, c.subject, c.start_time, c.end_time, c.times, c.room, c.teacher_id, u.name AS teacher_name, u.photo_v AS teacher_photo_v,
       (SELECT COUNT(*) FROM attendance a WHERE a.course_id = c.id AND a.date = ?) AS checked_count,
       (SELECT COUNT(*) FROM enrollments e JOIN students s ON s.id = e.student_id WHERE e.course_id = c.id AND s.status = '재원') AS student_count
      FROM courses c LEFT JOIN users u ON u.id = c.teacher_id
@@ -1132,7 +1175,7 @@ route('GET', '/api/dashboard', async ({ db, user }) => {
       students: studentCount.n,
       new_this_month: newThisMonth.n,
       courses_by_subject: bySubject,
-      today_courses: todayCourses,
+      today_courses: withTodayTime(todayCourses, wd),
       today_alerts: alerts,
       consult_month: consultMonth.n,
       consult_pending: consultPending.n,
