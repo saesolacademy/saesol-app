@@ -313,10 +313,15 @@ let initialized = false;
 
 export async function ensureSchema(db) {
   if (initialized) return;
-  await db.batch(SCHEMA.map((sql) => db.prepare(sql)));
-  // 예전에 만든 데이터베이스에 새 칸이 없으면 추가합니다.
+  // 1) 표 만들기 (이미 있으면 그대로)
+  await db.batch(SCHEMA.filter((sql) => !/CREATE INDEX/.test(sql)).map((sql) => db.prepare(sql)));
+  // 2) 예전에 만든 데이터베이스에 새 칸이 없으면 추가 (이미 있으면 넘어감)
   for (const sql of MIGRATIONS) {
     try { await db.prepare(sql).run(); } catch (e) { /* 이미 있으면 그냥 넘어갑니다 */ }
+  }
+  // 3) 색인은 새 칸이 생긴 다음에 만들어요. 하나가 실패해도 앱은 멈추지 않아요.
+  for (const sql of SCHEMA.filter((x) => /CREATE INDEX/.test(x))) {
+    try { await db.prepare(sql).run(); } catch (e) { console.error('index', e && e.message); }
   }
   initialized = true;
 }
