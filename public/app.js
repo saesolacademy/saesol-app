@@ -821,7 +821,7 @@
         body: `
           <div class="howto">
             <b>엑셀에서 제목 줄까지 같이</b> 복사해서(Ctrl+C) 아래 칸에 붙여 넣어 주세요(Ctrl+V). 칸 순서는 상관없어요. 제목을 보고 알아서 맞춰요.
-            <div class="small muted" style="margin-top:6px">알아듣는 제목: 이름 · 학교 · 학년 · 생년월일 · 주소 · 학생 연락처 · 아버지 성함 · 아버지 연락처 · 어머니 성함 · 어머니 연락처 · 문자 받을 분(어머니/아버지/둘 다) · 등록일 · 형제 · 특이사항</div>
+            <div class="small muted" style="margin-top:6px">알아듣는 제목: 이름 · 학교 · 학년 · 생년월일 · <b>학생 연락처</b> · 주소 · 아버지 성함 · 아버지 연락처 · 어머니 성함 · 어머니 연락처 · 문자 받을 분(어머니/아버지/둘 다) · 등록일 · 형제 · 특이사항</div>
             <a class="btn sm" href="/student-template.csv" download="학생등록양식.csv" style="margin-top:8px">⬇ 엑셀 양식 내려받기</a>
           </div>
           <textarea name="text" style="min-height:200px;font-family:inherit" placeholder="이름	학교	학년	생년월일	주소	어머니 성함	어머니 연락처	아버지 성함	아버지 연락처&#10;홍길동	대치중	중2	2012-05-14	서울 강남구 …	김영희	010-1234-5678	홍판서	010-2345-6789"></textarea>
@@ -830,8 +830,8 @@
         onSubmit: async (d, f) => {
           if (checked !== d.text) {
             const p = await api('POST', '/api/students/bulk', { text: d.text, preview: true });
-            const cols = ['name', 'school', 'grade', 'birth_date', 'address', 'mother_name', 'mother_phone', 'father_name', 'father_phone', 'sms_target'];
-            const label = { name: '이름', school: '학교', grade: '학년', birth_date: '생년월일', address: '주소', mother_name: '어머니', mother_phone: '어머니 연락처', father_name: '아버지', father_phone: '아버지 연락처', sms_target: '문자' };
+            const cols = ['name', 'school', 'grade', 'birth_date', 'student_phone', 'address', 'mother_name', 'mother_phone', 'father_name', 'father_phone', 'sms_target', 'enrolled_date', 'sibling_note', 'memo'];
+            const label = { name: '이름', school: '학교', grade: '학년', birth_date: '생년월일', student_phone: '학생 연락처', address: '주소', mother_name: '어머니', mother_phone: '어머니 연락처', father_name: '아버지', father_phone: '아버지 연락처', sms_target: '문자', enrolled_date: '등록일', sibling_note: '형제', memo: '특이사항' };
             const used = cols.filter((c) => p.rows.some((r) => r[c]));
             const ignored = p.columns.filter((c) => !c.label).map((c) => c.header).filter(Boolean);
             $('#bulkPreview', f).innerHTML = `
