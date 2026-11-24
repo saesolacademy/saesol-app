@@ -1279,6 +1279,15 @@ route('POST', '/api/catalog/:id/deliver', async ({ db, user, body, params }) => 
 });
 
 // ───────── 청구서 ─────────
+// 계좌 글: 청구하는 항목에 맞는 계좌만 넣어요 (교육비 계좌 / 교재비 계좌)
+function accountText(settings, hasTuition, hasBook) {
+  const t = settings.bank_account || '', b = settings.bank_account_book || '';
+  if (!t && !b) return '(학원으로 문의해 주세요)';
+  if (hasTuition && hasBook && t && b && t !== b) return `\n· 교육비: ${t}\n· 교재비: ${b}`;
+  if (hasBook && !hasTuition) return b || t;
+  return t || b;
+}
+
 // 이번 달 교육비(할인 반영) 남은 금액 + 교재비 미납을 학부모님께 문자로 보냅니다.
 async function billRows(db, month) {
   const rows = await q.all(
@@ -1316,7 +1325,7 @@ route('GET', '/api/bills', async ({ db, query }) => {
   const month = /^\d{4}-\d{2}$/.test(query.month || '') ? query.month : today().slice(0, 7);
   const rows = (await billRows(db, month)).map(({ _r, ...x }) => x);
   const s = await getSettings(db);
-  return { month, rows, bank_account: s.bank_account || '' };
+  return { month, rows, bank_account: s.bank_account || '', bank_account_book: s.bank_account_book || '' };
 }, OWNER);
 route('POST', '/api/bills/send', async ({ db, env, user, body }) => {
   const month = /^\d{4}-\d{2}$/.test(body.month || '') ? body.month : today().slice(0, 7);
@@ -1332,7 +1341,7 @@ route('POST', '/api/bills/send', async ({ db, env, user, body }) => {
     const lines = [];
     if (t.tuition_due) lines.push(`· ${mm}월 교육비 ${t.tuition_due.toLocaleString('ko-KR')}원${t.discount ? ` (할인 ${t.discount.toLocaleString('ko-KR')}원 적용)` : ''}${t.paid ? ` (이미 ${t.paid.toLocaleString('ko-KR')}원 납부)` : ''}`);
     if (t.book_due) lines.push(`· 교재비 ${t.book_due.toLocaleString('ko-KR')}원${t.recent_books ? ` (${t.recent_books})` : ''}`);
-    const text = fillTemplate(settings.tpl_bill, { 학원: settings.academy_name, 학생: t.name, 월: mm, 내역: lines.join('\n'), 합계: `${t.total.toLocaleString('ko-KR')}원`, 계좌: settings.bank_account || '(학원으로 문의해 주세요)' });
+    const text = fillTemplate(settings.tpl_bill, { 학원: settings.academy_name, 학생: t.name, 월: mm, 내역: lines.join('\n'), 합계: `${t.total.toLocaleString('ko-KR')}원`, 계좌: accountText(settings, !!t.tuition_due, !!t.book_due) });
     const parts = messagesFor(t._r, { kind: '청구서', text, ref_type: 'bill' });
     msgs.push(...parts);
     billInfo.push({ t, lines, n: parts.length });
@@ -1788,6 +1797,7 @@ route('PUT', '/api/settings', async ({ db, env, body }) => {
   }
   if ('book_suppliers' in body) set.push(['book_suppliers', JSON.stringify((body.book_suppliers || []).map(clean).filter(Boolean))]);
   if ('bank_account' in body) set.push(['bank_account', clean(body.bank_account) || '']);
+  if ('bank_account_book' in body) set.push(['bank_account_book', clean(body.bank_account_book) || '']);
   if ('tpl_bill' in body) set.push(['tpl_bill', need(body.tpl_bill, '청구서 문구')]);
   if ('teacher_view' in body) {
     const tv = body.teacher_view || {};

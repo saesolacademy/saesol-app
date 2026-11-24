@@ -1346,7 +1346,9 @@
         <h2 class="mt">교재 거래처</h2>
         <label class="field"><span>한 줄에 하나씩</span><textarea name="suppliers" style="min-height:110px">${h(s.book_suppliers.join('\n'))}</textarea></label>
         <h2 class="mt">청구서</h2>
-        <label class="field"><span>입금 계좌 (청구서에 들어가요)</span><input type="text" name="bank_account" value="${h(s.bank_account || '')}" placeholder="예: 농협 123-4567-8901 (예금주 새솔학원)"></label>
+        <label class="field"><span>교육비 입금 계좌</span><input type="text" name="bank_account" value="${h(s.bank_account || '')}" placeholder="예: 농협 123-4567-8901 (예금주 새솔학원)"></label>
+        <label class="field"><span>교재비 입금 계좌 (교육비와 같으면 비워 두세요)</span><input type="text" name="bank_account_book" value="${h(s.bank_account_book || '')}" placeholder="예: 국민 987-65-43210 (예금주 이은희)"></label>
+        <p class="small muted" style="margin-top:-6px">청구서에는 청구하는 항목에 맞는 계좌만 들어가요. 교육비·교재비를 같이 청구하면 두 계좌가 따로 적혀요.</p>
         <label class="field"><span>청구서 문구 — 쓸 수 있는 칸: {학원} {학생} {월} {내역} {합계} {계좌}</span><textarea name="tpl_bill" style="min-height:130px">${h(s.tpl_bill)}</textarea></label>
         <h2 class="mt">강사에게 보여 줄 학생 정보</h2>
         <p class="small muted" style="margin-top:-6px">원장님은 항상 전부 볼 수 있어요. 강사는 체크한 항목만, 그리고 자기 반 학생만 볼 수 있어요. 감독은 전체 학생의 인적사항·연락처를 보고, 수강료·수납은 볼 수 없어요(주소는 이 체크를 따라요). 수납 기록은 원장님만 쓸 수 있어요.</p>
@@ -1375,7 +1377,7 @@
         const teacher_view = Object.fromEntries(Object.keys(s.teacher_view_labels).map((k) => [k, !!d['tv_' + k]]));
         const discount_items = $$('.disc-row', e.target).map((r) => ({ id: $('[data-did]', r).value, name: $('[data-dname]', r).value, amount: $('[data-damt]', r).value })).filter((x) => x.name.trim());
         const book_suppliers = String(d.suppliers || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-        await api('PUT', '/api/settings', { academy_name: d.academy_name, mottos: [d.motto0, d.motto1, d.motto2], tpl_attendance: d.tpl_attendance, tpl_feedback: d.tpl_feedback, send_mode: d.send_mode, teacher_view, discount_items, book_suppliers, bank_account: d.bank_account, tpl_bill: d.tpl_bill });
+        await api('PUT', '/api/settings', { academy_name: d.academy_name, mottos: [d.motto0, d.motto1, d.motto2], tpl_attendance: d.tpl_attendance, tpl_feedback: d.tpl_feedback, send_mode: d.send_mode, teacher_view, discount_items, book_suppliers, bank_account: d.bank_account, bank_account_book: d.bank_account_book, tpl_bill: d.tpl_bill });
         state.academy = d.academy_name;
         toast('저장했어요');
         renderShell();
@@ -1566,7 +1568,7 @@
     el.innerHTML = `
       <div class="page-head"><div><h1>청구서 보내기</h1><p>학생마다 ${mm}월 교육비(할인 반영)에서 낸 금액을 빼고, 교재비 미납을 더해 학부모님께 문자로 보내요.</p></div>
         <div class="row"><input type="month" id="mon" value="${h(month)}" style="width:auto"></div></div>
-      ${d.bank_account ? '' : '<div class="banner info">🏦 입금 계좌가 아직 없어요. <a href="#/settings">설정</a>에서 입금 계좌를 넣어 주세요.</div>'}
+      ${d.bank_account || d.bank_account_book ? '' : '<div class="banner info">🏦 입금 계좌가 아직 없어요. <a href="#/settings">설정</a>에서 교육비·교재비 입금 계좌를 넣어 주세요.</div>'}
       <div class="card">
         <div class="row"><span class="small muted">보낼 금액 합계 <b>${won(rows.reduce((a, r) => a + r.total, 0))}</b> · ${rows.filter((r) => r.total > 0).length}명</span><span class="space"></span>
           <label class="inline-check small"><input type="checkbox" id="all" ${showAll ? 'checked' : ''}> 보낼 금액 없는 학생도 보기</label></div>
@@ -1597,7 +1599,7 @@
       const lines = [];
       if (r.tuition_due) lines.push(`· ${mm}월 교육비 ${r.tuition_due.toLocaleString('ko-KR')}원${r.discount ? ` (할인 ${r.discount.toLocaleString('ko-KR')}원 적용)` : ''}${r.paid ? ` (이미 ${r.paid.toLocaleString('ko-KR')}원 납부)` : ''}`);
       if (r.book_due) lines.push(`· 교재비 ${r.book_due.toLocaleString('ko-KR')}원${r.recent_books ? ` (${r.recent_books})` : ''}`);
-      const text = st.tpl_bill.replace(/\{([^{}]+)\}/g, (all, k) => ({ 학원: st.academy_name, 학생: r.name, 월: mm, 내역: lines.join('\n'), 합계: `${r.total.toLocaleString('ko-KR')}원`, 계좌: st.bank_account || '(학원으로 문의해 주세요)' })[k] ?? all);
+      const text = st.tpl_bill.replace(/\{([^{}]+)\}/g, (all, k) => ({ 학원: st.academy_name, 학생: r.name, 월: mm, 내역: lines.join('\n'), 합계: `${r.total.toLocaleString('ko-KR')}원`, 계좌: (() => { const t = st.bank_account || '', b = st.bank_account_book || ''; if (!t && !b) return '(학원으로 문의해 주세요)'; if (r.tuition_due && r.book_due && t && b && t !== b) return `\n· 교육비: ${t}\n· 교재비: ${b}`; if (r.book_due && !r.tuition_due) return b || t; return t || b; })() })[k] ?? all);
       modal({ title: `${r.name} 청구서 미리 보기`, body: `<div class="preview">${h(text)}</div><p class="small muted">문구는 [설정 → 청구서 문구]에서 바꿀 수 있어요.</p>` });
     };
     $('#send').onclick = async () => {

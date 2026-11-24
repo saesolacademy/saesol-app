@@ -270,6 +270,7 @@ export const DEFAULT_SETTINGS = {
   ]),
   book_suppliers: JSON.stringify(['샘터서점', '대한서정', '러닝북스', '조이매스', '인터넷 총판']),
   bank_account: '',
+  bank_account_book: '',
   tpl_bill: '[{학원}] {학생} 학생 {월}월 수납 안내\n\n{내역}\n합계 {합계}\n\n입금 계좌: {계좌}\n이미 납부하셨다면 이 문자는 넘겨 주세요. 감사합니다.',
   // 강사에게 보여 줄 학생 정보 (원장은 항상 전부 봅니다)
   teacher_view: JSON.stringify({
