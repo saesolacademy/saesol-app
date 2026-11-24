@@ -412,7 +412,7 @@
               return `<div class="unitgrp" data-ubook="${h(b)}" ${show ? '' : 'hidden'}>${b ? `<div class="small muted" style="margin:8px 0 4px">${h(b)} 단원</div>` : ''}${list.length ? `<div class="chips">${list.map((u) => `<label class="pick ${u.done_log_id === logId ? 'on' : ''}"><input type="checkbox" name="u_${u.id}" ${u.done_log_id === logId ? 'checked' : ''} hidden>${h(u.title)}${u.planned_date ? ` <span class="small ${u.planned_date < date && !u.done_date ? 'red-t' : 'muted'}">${u.planned_date.slice(5).replace('-', '/')}</span>` : ''}</label>`).join('')}</div>` : '<div class="small muted">🎉 이 교재 단원을 모두 마쳤어요</div>'}</div>`;
             }).join('')}</div>
           </div>
-          <div class="field"><span class="small muted">🔤 영단어 시험: ${hasWords ? `${new Set(words.map((w) => w.student_id)).size}명 · 통과 ${new Set(words.filter((w) => w.passed).map((w) => w.student_id)).size}명 (학생별 표에 보여요)` : '아직 기록이 없어요'} · <a href="#/word?date=${date}&course=${courseId}">단어시험 채점하기 →</a></span></div>
+          ${att.course.subject === '영어' || hasWords ? `<div class="field"><span class="small muted">🔤 영단어 시험: ${hasWords ? `${new Set(words.map((w) => w.student_id)).size}명 · 통과 ${new Set(words.filter((w) => w.passed).map((w) => w.student_id)).size}명 (학생별 표에 보여요)` : '아직 기록이 없어요'} · <a href="#/word?date=${date}&course=${courseId}">단어시험 채점하기 →</a></span></div>` : ''}
           ${fields.length ? `<div class="field"><span class="small muted">🗂️ 기타 항목</span>${fields.map((fd, i) => `
             <div class="row" style="margin-top:6px"><b class="small" style="min-width:90px">${h(fd.name)}</b>
               ${fd.options && fd.options.length ? `<div class="chips">${fd.options.map((o) => `<button type="button" class="pick ${extras[fd.name] === o ? 'on' : ''}" data-ex="${i}" data-v="${h(o)}">${h(o)}</button>`).join('')}</div>` : `<input type="text" data-ext="${i}" value="${h(extras[fd.name] || '')}" style="flex:1">`}
@@ -571,15 +571,22 @@
 
   async function pageWord(el, _p, query) {
     const date = query.date || todayStr();
-    const [todayData, all] = await Promise.all([api('GET', `/api/attendance/today?date=${date}`), api('GET', '/api/courses')]);
-    const courseId = Number(query.course) || (todayData.courses[0] && todayData.courses[0].id) || (all.courses[0] && all.courses[0].id) || null;
+    const [todayRaw, allRaw] = await Promise.all([api('GET', `/api/attendance/today?date=${date}`), api('GET', '/api/courses')]);
+    // 영어 반만 보여요
+    const todayData = { courses: todayRaw.courses.filter((c) => c.subject === '영어') };
+    const all = { courses: allRaw.courses.filter((c) => c.subject === '영어') };
+    const courseId = (all.courses.some((c) => c.id === Number(query.course)) && Number(query.course)) || (todayData.courses[0] && todayData.courses[0].id) || (all.courses[0] && all.courses[0].id) || null;
     const others = all.courses.filter((c) => !todayData.courses.some((t) => t.id === c.id));
+    if (!all.courses.length) {
+      el.innerHTML = `<div class="page-head"><div><h1>📝 단어시험 채점</h1></div></div><div class="card empty">${isOwner() ? '과목이 "영어"인 반이 없어요. [반 관리]에서 영어 반의 과목을 "영어"로 정해 주세요.' : '내가 맡은 영어 반이 없어요.'}</div>`;
+      return;
+    }
     el.innerHTML = `
       <div class="page-head"><div><h1>📝 단어시험 채점</h1><p>채점한 시험지를 찍고 맞은 개수만 누르면 돼요. 결과와 시험지가 학생·담당 선생님께 가고, 수업 일지에 기록돼요.</p></div>
         <input type="date" id="wdate" value="${h(date)}" style="width:auto"></div>
       <div class="card">
-        ${todayData.courses.length ? `<div class="course-pick">${todayData.courses.map((c) => `<button data-wc="${c.id}" class="${c.id === courseId ? 'on' : ''}"><b>${h(c.name)}</b><span class="small muted">${h(c.start_time || '')} ${h(c.teacher_name || '')}</span></button>`).join('')}</div>` : '<div class="muted small">이 날짜에 잡힌 수업이 없어요.</div>'}
-        ${others.length ? `<div class="row mt"><span class="small muted">다른 반</span><select id="wother" style="width:auto"><option value="">선택</option>${others.map((c) => `<option value="${c.id}" ${c.id === courseId ? 'selected' : ''}>${h(c.name)}</option>`).join('')}</select></div>` : ''}
+        ${todayData.courses.length ? `<div class="course-pick">${todayData.courses.map((c) => `<button data-wc="${c.id}" class="${c.id === courseId ? 'on' : ''}"><b>${h(c.name)}</b><span class="small muted">${h(c.start_time || '')} ${h(c.teacher_name || '')}</span></button>`).join('')}</div>` : '<div class="muted small">이 날짜에 잡힌 영어 수업이 없어요. 아래에서 반을 골라 주세요.</div>'}
+        ${others.length ? `<div class="row mt"><span class="small muted">다른 영어 반</span><select id="wother" style="width:auto"><option value="">선택</option>${others.map((c) => `<option value="${c.id}" ${c.id === courseId ? 'selected' : ''}>${h(c.name)}</option>`).join('')}</select></div>` : ''}
       </div>
       <div id="wbox"></div>`;
     const go = (cid, dt = date) => (location.hash = `#/word?date=${dt}${cid ? `&course=${cid}` : ''}`);
