@@ -13,6 +13,7 @@ export const SCHEMA = [
     password_hash TEXT NOT NULL,
     name TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('owner','teacher','student')),
+    staff_role TEXT,
     student_id INTEGER,
     phone TEXT,
     photo TEXT,
@@ -213,6 +214,7 @@ export const TEACHER_VIEW_LABELS = {
 const MIGRATIONS = [
   'ALTER TABLE users ADD COLUMN photo TEXT',
   'ALTER TABLE users ADD COLUMN photo_v INTEGER',
+  'ALTER TABLE users ADD COLUMN staff_role TEXT',
   'ALTER TABLE courses ADD COLUMN fee INTEGER',
   'ALTER TABLE enrollments ADD COLUMN fee INTEGER',
   'ALTER TABLE consultations ADD COLUMN subject TEXT',

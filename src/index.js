@@ -75,14 +75,18 @@ function prettyDate(date) {
 const SUBJECTS = ['국어', '영어', '수학', '과학', '사회', '기타'];
 const ATT_STATUS = ['출석', '지각', '결석', '조퇴'];
 
+// 감독: 학원 전체 학생을 보고, 학생 등록·수정과 반 배정을 할 수 있는 강사 (원장 전용 메뉴·돈 관련은 제외)
+const isManager = (user) => user.role === 'teacher' && user.staff_role === 'manager';
+const seesAll = (user) => user.role === 'owner' || isManager(user);
+
 // 강사는 "내 반에 있는 학생" 만 볼 수 있습니다.
 const MY_STUDENTS = `SELECT e.student_id FROM enrollments e JOIN courses c ON c.id = e.course_id WHERE c.teacher_id = ?`;
 function studentScope(user, col = 's.id') {
-  if (user.role === 'owner') return { sql: '1=1', params: [] };
+  if (seesAll(user)) return { sql: '1=1', params: [] };
   return { sql: `${col} IN (${MY_STUDENTS})`, params: [user.id] };
 }
 async function canSeeStudent(db, user, studentId) {
-  if (user.role === 'owner') return true;
+  if (seesAll(user)) return true;
   const r = await q.first(db, `SELECT 1 AS ok FROM enrollments e JOIN courses c ON c.id = e.course_id WHERE c.teacher_id = ? AND e.student_id = ?`, user.id, studentId);
   return !!r;
 }
@@ -95,7 +99,7 @@ async function mustSeeStudent(db, user, studentId) {
 async function mustSeeCourse(db, user, courseId) {
   const c = await q.first(db, 'SELECT c.*, u.name AS teacher_name FROM courses c LEFT JOIN users u ON u.id = c.teacher_id WHERE c.id = ?', courseId);
   if (!c) fail(404, '반을 찾을 수 없어요');
-  if (user.role !== 'owner' && c.teacher_id !== user.id) fail(403, '담당 반이 아니에요');
+  if (!seesAll(user) && c.teacher_id !== user.id) fail(403, '담당 반이 아니에요');
   return c;
 }
 
@@ -113,7 +117,7 @@ function parseMottos(s) {
   }
 }
 
-const publicUser = (u) => ({ id: u.id, login_id: u.login_id, name: u.name, role: u.role, student_id: u.student_id ?? null, phone: u.phone ?? null, photo_v: u.photo_v ?? null });
+const publicUser = (u) => ({ id: u.id, login_id: u.login_id, name: u.name, role: u.role, staff_role: u.staff_role ?? null, student_id: u.student_id ?? null, phone: u.phone ?? null, photo_v: u.photo_v ?? null });
 
 // ───────── 주소(라우트) 등록 ─────────
 
@@ -121,9 +125,10 @@ const routes = [];
 function route(method, path, handler, opts = {}) {
   const keys = [];
   const re = new RegExp('^' + path.replace(/:(\w+)/g, (_, k) => (keys.push(k), '([^/]+)')) + '$');
-  routes.push({ method, re, keys, handler, roles: opts.roles || ['owner', 'teacher'], public: !!opts.public });
+  routes.push({ method, re, keys, handler, roles: opts.roles || ['owner', 'teacher'], om: !!opts.om, public: !!opts.public });
 }
 const OWNER = { roles: ['owner'] };
+const OM = { roles: ['owner', 'teacher'], om: true }; // 원장 또는 감독
 const EVERYONE = { roles: ['owner', 'teacher', 'student'] };
 
 // ───────── 처음 설정 / 로그인 ─────────
@@ -213,7 +218,7 @@ route(
   async ({ db }) => ({
     users: await q.all(
       db,
-      `SELECT u.id, u.login_id, u.name, u.role, u.phone, u.photo_v, u.active, u.created_at,
+      `SELECT u.id, u.login_id, u.name, u.role, u.staff_role, u.phone, u.photo_v, u.active, u.created_at,
         (SELECT COUNT(*) FROM courses c WHERE c.teacher_id = u.id AND c.active = 1) AS course_count
        FROM users u WHERE u.role IN ('owner','teacher')
        ORDER BY u.active DESC, u.role = 'owner' DESC, u.name`
@@ -229,9 +234,10 @@ route(
     checkLoginId(body.login_id);
     checkPassword(body.password);
     const role = body.role === 'owner' ? 'owner' : 'teacher';
+    const staffRole = body.role === 'manager' ? 'manager' : null;
     const exists = await q.first(db, 'SELECT id FROM users WHERE login_id = ?', body.login_id);
     if (exists) fail(400, '이미 쓰고 있는 아이디예요');
-    const r = await q.run(db, 'INSERT INTO users (login_id, password_hash, name, role, phone) VALUES (?, ?, ?, ?, ?)', body.login_id, await hashPassword(body.password), need(body.name, '이름'), role, phone(body.phone));
+    const r = await q.run(db, 'INSERT INTO users (login_id, password_hash, name, role, staff_role, phone) VALUES (?, ?, ?, ?, ?, ?)', body.login_id, await hashPassword(body.password), need(body.name, '이름'), role, staffRole, phone(body.phone));
     return { ok: true, id: r.meta.last_row_id };
   },
   OWNER
@@ -246,6 +252,9 @@ route(
     if (!u) fail(404, '계정을 찾을 수 없어요');
     if ('name' in body) await q.run(db, 'UPDATE users SET name = ? WHERE id = ?', need(body.name, '이름'), id);
     if ('phone' in body) await q.run(db, 'UPDATE users SET phone = ? WHERE id = ?', phone(body.phone), id);
+    if ('role' in body && u.role === 'teacher') {
+      await q.run(db, 'UPDATE users SET staff_role = ? WHERE id = ?', body.role === 'manager' ? 'manager' : null, id);
+    }
     if ('active' in body) {
       if (id === user.id && !body.active) fail(400, '내 계정은 사용 중지할 수 없어요');
       await q.run(db, 'UPDATE users SET active = ? WHERE id = ?', body.active ? 1 : 0, id);
@@ -262,7 +271,7 @@ route(
 );
 
 // 반 배정용 강사 목록 (원장만)
-route('GET', '/api/teachers', async ({ db }) => ({ teachers: await q.all(db, `SELECT id, name, role, photo_v FROM users WHERE role IN ('owner','teacher') AND active = 1 ORDER BY name`) }), OWNER);
+route('GET', '/api/teachers', async ({ db }) => ({ teachers: await q.all(db, `SELECT id, name, role, staff_role, photo_v FROM users WHERE role IN ('owner','teacher') AND active = 1 ORDER BY name`) }), OWNER);
 
 // ───────── 선생님 사진 ─────────
 // 사진은 화면에서 작게(정사각형) 줄인 뒤 데이터베이스에 저장합니다.
@@ -311,7 +320,12 @@ async function viewOf(db, user) {
   let v = {};
   try { v = JSON.parse(s.teacher_view); } catch {}
   const def = JSON.parse(DEFAULT_SETTINGS.teacher_view);
-  return Object.fromEntries(Object.keys(TEACHER_VIEW_LABELS).map((k) => [k, k in v ? !!v[k] : def[k]]));
+  const out = Object.fromEntries(Object.keys(TEACHER_VIEW_LABELS).map((k) => [k, k in v ? !!v[k] : def[k]]));
+  if (isManager(user)) {
+    // 학생 등록·수정을 맡으므로 인적사항은 열고, 수강료·수납은 닫습니다
+    Object.assign(out, { birth: true, parents: true, siblings: true, memo: true, books: true, fees: false, tuition: false, bookpay: false });
+  }
+  return out;
 }
 
 const maskPhone = (p) => (p ? String(p).replace(/^(\d{3})\d+(\d{4})$/, '$1-****-$2') : p);
@@ -434,7 +448,7 @@ route(
     const r = await q.run(db, `INSERT INTO students (${STUDENT_FIELDS.join(',')}) VALUES (${STUDENT_FIELDS.map(() => '?').join(',')})`, ...STUDENT_FIELDS.map((f) => v[f] ?? null));
     return { ok: true, id: r.meta.last_row_id };
   },
-  OWNER
+  OM
 );
 
 // 여러 명 한꺼번에 등록: 한 줄에 한 명, "이름, 학교, 학년, 어머니 연락처, 아버지 연락처"
@@ -457,7 +471,7 @@ route(
     await db.batch(stmts);
     return { ok: true, added: stmts.length };
   },
-  OWNER
+  OM
 );
 
 route(
@@ -470,7 +484,7 @@ route(
     await q.run(db, `UPDATE students SET ${STUDENT_FIELDS.map((f) => `${f} = ?`).join(', ')} WHERE id = ?`, ...STUDENT_FIELDS.map((f) => v[f] ?? null), cur.id);
     return { ok: true };
   },
-  OWNER
+  OM
 );
 
 // 학생 사진 (원장, 또는 그 학생을 맡은 강사)
@@ -515,7 +529,7 @@ route('POST', '/api/students/:id/siblings', async ({ db, body, params }) => {
   for (const old of [a.family_id, b.family_id]) if (old && old !== fam) stmts.push(db.prepare('UPDATE students SET family_id = ? WHERE family_id = ?').bind(fam, old));
   await db.batch(stmts);
   return { ok: true };
-}, OWNER);
+}, OM);
 
 route('DELETE', '/api/students/:id/siblings/:other', async ({ db, params }) => {
   const other = await q.first(db, 'SELECT id, family_id FROM students WHERE id = ?', Number(params.other));
@@ -525,7 +539,7 @@ route('DELETE', '/api/students/:id/siblings/:other', async ({ db, params }) => {
   const left = await q.all(db, 'SELECT id FROM students WHERE family_id = ?', other.family_id);
   if (left.length === 1) await q.run(db, 'UPDATE students SET family_id = NULL WHERE id = ?', left[0].id);
   return { ok: true };
-}, OWNER);
+}, OM);
 
 // 학생별 수강료 (원장) — 비우면 반 기본 금액을 씁니다
 route('PATCH', '/api/enrollments', async ({ db, body }) => {
@@ -587,7 +601,7 @@ route('DELETE', '/api/payments/:id', async ({ db, params }) => {
 route('GET', '/api/courses', async ({ db, user, query }) => {
   const where = [];
   const params = [];
-  if (user.role !== 'owner') where.push('c.teacher_id = ?'), params.push(user.id);
+  if (!seesAll(user)) where.push('c.teacher_id = ?'), params.push(user.id);
   if (query.active !== 'all') where.push('c.active = 1');
   const courses = await q.all(
     db,
@@ -655,7 +669,7 @@ route(
     await db.batch([db.prepare('DELETE FROM enrollments WHERE course_id = ?').bind(id), ...ids.map((sid) => db.prepare('INSERT OR IGNORE INTO enrollments (course_id, student_id) VALUES (?, ?)').bind(id, sid))]);
     return { ok: true, count: ids.length };
   },
-  OWNER
+  OM
 );
 
 // ───────── 출결 알림 ─────────
@@ -665,7 +679,7 @@ route('GET', '/api/attendance/today', async ({ db, user, query }) => {
   const wd = weekdayOf(date);
   const params = [date, wd];
   let mine = '';
-  if (user.role !== 'owner') (mine = 'AND c.teacher_id = ?'), params.push(user.id);
+  if (!seesAll(user)) (mine = 'AND c.teacher_id = ?'), params.push(user.id);
   const courses = await q.all(
     db,
     `SELECT c.id, c.name, c.subject, c.start_time, c.end_time, c.room, c.teacher_id, u.name AS teacher_name, u.photo_v AS teacher_photo_v,
@@ -750,7 +764,7 @@ route('POST', '/api/attendance', async ({ db, env, user, body }) => {
   return {
     ok: true,
     saved: stmts.length,
-    messages: toNotify.map((m, i) => ({ student_id: m.student_id, text: m.text, to: user.role === 'owner' ? m.to : maskPhone(m.to), ...results[i] })),
+    messages: toNotify.map((m, i) => ({ student_id: m.student_id, text: m.text, to: seesAll(user) ? m.to : maskPhone(m.to), ...results[i] })),
   };
 });
 
@@ -769,7 +783,7 @@ function periodCard(p, unsent, total, now) {
 async function periodCounts(db, user, p) {
   const params = [p.id, p.subjects];
   let mine = '';
-  if (user.role !== 'owner') (mine = 'AND c.teacher_id = ?'), params.push(user.id);
+  if (!seesAll(user)) (mine = 'AND c.teacher_id = ?'), params.push(user.id);
   const r = await q.first(
     db,
     `SELECT COUNT(*) AS total, SUM(CASE WHEN f.status = '발송완료' THEN 0 ELSE 1 END) AS unsent
@@ -837,7 +851,7 @@ route('GET', '/api/feedbacks', async ({ db, user, query }) => {
   if (!period) fail(404, '피드백 기간을 찾을 수 없어요');
   const params = [period.id, period.subjects];
   let mine = '';
-  if (user.role !== 'owner') (mine = 'AND c.teacher_id = ?'), params.push(user.id);
+  if (!seesAll(user)) (mine = 'AND c.teacher_id = ?'), params.push(user.id);
   const rows = await q.all(
     db,
     `SELECT c.id AS course_id, c.name AS course_name, c.subject, u.name AS teacher_name,
@@ -895,7 +909,7 @@ route('POST', '/api/feedbacks/send', async ({ db, env, user, body }) => {
      WHERE f.id IN (${ids.map(() => '?').join(',')})`,
     ...ids
   );
-  const allowed = rows.filter((r) => (user.role === 'owner' || r.teacher_id === user.id) && r.content.trim());
+  const allowed = rows.filter((r) => (seesAll(user) || r.teacher_id === user.id) && r.content.trim());
   if (!allowed.length) fail(400, '보낼 수 있는 피드백이 없어요 (내용이 비어 있거나 담당 반이 아니에요)');
   const settings = await getSettings(db);
   const msgs = allowed.flatMap((r) => messagesFor({ ...r, id: r.student_id }, { kind: '피드백', text: feedbackText(settings, r, r.teacher_name), ref_type: 'feedback', ref_id: r.id }));
@@ -1079,8 +1093,8 @@ route('GET', '/api/dashboard', async ({ db, user }) => {
   const studentCount = await q.first(db, `SELECT COUNT(*) AS n FROM students s WHERE s.status = '재원' AND ${sc.sql}`, ...sc.params);
   const newThisMonth = await q.first(db, `SELECT COUNT(*) AS n FROM students s WHERE s.status = '재원' AND substr(s.created_at, 1, 7) = ? AND ${sc.sql}`, now.slice(0, 7), ...sc.params);
 
-  const courseWhere = user.role === 'owner' ? '' : 'AND c.teacher_id = ?';
-  const courseParams = user.role === 'owner' ? [] : [user.id];
+  const courseWhere = seesAll(user) ? '' : 'AND c.teacher_id = ?';
+  const courseParams = seesAll(user) ? [] : [user.id];
   const bySubject = await q.all(db, `SELECT c.subject, COUNT(*) AS n FROM courses c WHERE c.active = 1 ${courseWhere} GROUP BY c.subject ORDER BY n DESC`, ...courseParams);
 
   const wd = weekdayOf(now);
@@ -1186,6 +1200,7 @@ export default {
           ctx.user = await currentUser(env.DB, request);
           if (!ctx.user) fail(401, '로그인이 필요해요');
           if (!r.roles.includes(ctx.user.role)) fail(403, '이 메뉴를 쓸 권한이 없어요');
+          if (r.om && !seesAll(ctx.user)) fail(403, '원장님이나 감독님만 할 수 있어요');
         }
         if (request.method !== 'GET') ctx.body = await request.json().catch(() => ({}));
         const res = await r.handler(ctx);

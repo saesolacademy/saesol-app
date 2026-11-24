@@ -48,4 +48,3 @@ src/auth.js        로그인, 비밀번호 암호화
 src/sms.js         솔라피 문자 발송
 public/            화면 (index.html, app.js, style.css)
 ```
-첫 배포: 2026년 11월 23일

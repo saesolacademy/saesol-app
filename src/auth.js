@@ -66,7 +66,7 @@ export async function currentUser(db, request) {
   if (!token) return null;
   const row = await db
     .prepare(
-      `SELECT u.id, u.login_id, u.name, u.role, u.student_id, u.phone, u.photo_v, s.expires_at
+      `SELECT u.id, u.login_id, u.name, u.role, u.staff_role, u.student_id, u.phone, u.photo_v, s.expires_at
        FROM sessions s JOIN users u ON u.id = s.user_id
        WHERE s.token = ? AND u.active = 1`
     )

@@ -56,6 +56,10 @@
   }
   const fmtPhone = (p) => (!p ? '' : p.length === 11 ? `${p.slice(0, 3)}-${p.slice(3, 7)}-${p.slice(7)}` : p.length === 10 ? `${p.slice(0, 3)}-${p.slice(3, 6)}-${p.slice(6)}` : p);
   const isOwner = () => state.me && state.me.role === 'owner';
+  const isManager = () => state.me && state.me.role === 'teacher' && state.me.staff_role === 'manager';
+  const canEditStudents = () => isOwner() || isManager(); // 원장·감독
+  const roleLabel = (u) => (u.role === 'owner' ? '원장' : u.staff_role === 'manager' ? '감독' : '강사');
+  const roleChip = (u) => (u.role === 'owner' ? '<span class="chip gold">원장</span>' : u.staff_role === 'manager' ? '<span class="chip blue">감독</span>' : '<span class="chip">강사</span>');
   const statusChip = (s) => {
     const map = { 출석: 'green', 지각: 'orange', 결석: 'red', 조퇴: 'blue', 미리보기: 'gold', 발송: 'green', 실패: 'red', 발송완료: 'green', 작성중: 'blue', 미작성: '', 재원: 'green', 휴원: 'orange', 퇴원: '', 높음: 'red', 주의: 'orange' };
     return `<span class="chip ${map[s] || ''}">${h(s)}</span>`;
@@ -189,7 +193,7 @@
     { group: null, items: [['', '🏠', '대시보드']] },
     { group: '원장 전용', owner: true, items: [['teachers', '👥', '선생님 계정'], ['courses', '🗂️', '반 관리'], ['periods', '🗓️', '피드백 기간'], ['settings', '⚙️', '설정']] },
     { group: '학생 관리', items: [['attendance', '✅', '출결 알림'], ['feedback', '📝', '피드백 작성'], ['risks', '🚨', '이탈 신호 관리'], ['messages', '📨', '피드백·문자 발송 기록'], ['consultations', '💬', '상담 정리']] },
-    { group: '기본 정보', items: [['students', '🎒', '학생 명부']] },
+    { group: '기본 정보', items: [['students', '🎒', '학생 명부'], ['courses', '🗂️', '반 학생 넣기', 'manager']] },
   ];
 
   function renderShell() {
@@ -203,11 +207,11 @@
             ${NAV.filter((g) => !g.owner || me.role === 'owner').map((g) => `
               <div class="nav-group ${g.owner ? 'owner' : ''}">
                 ${g.group ? `<div class="nav-title">${g.owner ? '☆ ' : ''}${h(g.group)}</div>` : ''}
-                ${g.items.map(([k, ico, label]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${ico}</span>${h(label)}</a>`).join('')}
+                ${g.items.filter((it) => it[3] !== 'manager' || isManager()).map(([k, ico, label]) => `<a href="#/${k}" data-nav="${k}"><span class="ico">${ico}</span>${h(label)}</a>`).join('')}
               </div>`).join('')}
           </nav>
           <div class="side-foot">
-            <div class="who">${avatar(me.id, me.photo_v, me.name, 36)}<div>${h(me.name)} <small>${me.role === 'owner' ? '원장' : '강사'} · ${h(me.login_id)}</small></div></div>
+            <div class="who">${avatar(me.id, me.photo_v, me.name, 36)}<div>${h(me.name)} <small>${roleLabel(me)} · ${h(me.login_id)}</small></div></div>
             <nav class="nav"><a href="#/me"><span class="ico">🔑</span>내 정보·비밀번호</a><a href="#" id="logout"><span class="ico">🚪</span>로그아웃</a></nav>
           </div>
         </aside>
@@ -239,7 +243,7 @@
     $('#shell').classList.remove('menu-open');
     const main = $('#main');
     const page = PAGES[key];
-    if (!page || (page.owner && !isOwner())) {
+    if (!page || (page.owner && !isOwner()) || (page.allow && !page.allow())) {
       main.innerHTML = errBox('없는 화면이에요');
       return;
     }
@@ -257,7 +261,7 @@
   async function pageDashboard(el) {
     const d = await api('GET', '/api/dashboard');
     const s = d.stats;
-    const greet = d.user.role === 'owner' ? `${h(d.user.name)} 원장님, 오늘도 좋은 하루 되세요.` : `${h(d.user.name)}쌤, 오늘도 잘 부탁드려요.`;
+    const greet = d.user.role === 'owner' ? `${h(d.user.name)} 원장님, 오늘도 좋은 하루 되세요.` : d.user.staff_role === 'manager' ? `${h(d.user.name)} 감독님, 오늘도 잘 부탁드려요.` : `${h(d.user.name)}쌤, 오늘도 잘 부탁드려요.`;
     const [y, m, dd] = d.today.split('-');
     const alertTxt = s.today_alerts.length ? s.today_alerts.map((a) => `${a.status} ${a.n}`).join(' · ') : '지각·결석 없음';
     const checked = s.today_courses.filter((c) => c.checked_count > 0).length;
@@ -712,8 +716,8 @@
     const { students, view } = await api('GET', '/api/students' + (qs ? '?' + qs : ''));
     const count = (k) => students.filter((s) => s.status === k).length;
     el.innerHTML = `
-      <div class="page-head"><div><h1>학생 명부</h1><p>${isOwner() ? '학생을 누르면 인적사항·상담·교재·수납이 한 화면에 나와요.' : '내 반 학생만 보여요. 학생을 누르면 학생 카드가 열려요.'}</p></div>
-        ${isOwner() ? '<div class="row"><button class="btn" id="bulk">여러 명 한꺼번에 추가</button><button class="btn primary" id="add">＋ 학생 등록</button></div>' : ''}</div>
+      <div class="page-head"><div><h1>학생 명부</h1><p>${isOwner() ? '학생을 누르면 인적사항·상담·교재·수납이 한 화면에 나와요.' : isManager() ? '학원 전체 학생이에요. 학생을 누르면 학생 카드가 열려요.' : '내 반 학생만 보여요. 학생을 누르면 학생 카드가 열려요.'}</p></div>
+        ${canEditStudents() ? '<div class="row"><button class="btn" id="bulk">여러 명 한꺼번에 추가</button><button class="btn primary" id="add">＋ 학생 등록</button></div>' : ''}</div>
       <div class="card">
         <form class="row" id="filter">
           <div class="tabs">${[['재원', '재원생'], ['휴원', '휴원생'], ['퇴원', '퇴원생'], ['', '전체']].map(([v, l]) => `<button type="button" class="btn sm ${st === v ? 'primary' : ''}" data-st="${v}">${l}</button>`).join('')}</div>
@@ -741,7 +745,7 @@
     $$('[data-st]', el).forEach((b) => (b.onclick = () => go({ status: b.dataset.st })));
     $('#filter').onsubmit = (e) => { e.preventDefault(); go({ q: new FormData(e.target).get('q') }); };
     $$('tr[data-id]', el).forEach((tr) => (tr.onclick = () => (location.hash = `#/students/${tr.dataset.id}`)));
-    if (!isOwner()) return;
+    if (!canEditStudents()) return;
     $('#add').onclick = () => modal({ title: '학생 등록', wide: true, body: studentForm({ status: '재원' }), onSubmit: async (d) => { const r = await api('POST', '/api/students', d); toast('등록했어요'); location.hash = `#/students/${r.id}`; } });
     $('#bulk').onclick = () => modal({
       title: '여러 명 한꺼번에 추가', wide: true, submitText: '등록하기',
@@ -753,7 +757,7 @@
 
   async function pageStudent(el, id) {
     const d = await api('GET', `/api/students/${id}`);
-    const s = d.student, v = d.view, own = isOwner();
+    const s = d.student, v = d.view, own = isOwner(), edit = canEditStudents();
     const absent = d.attendance.filter((a) => a.status === '결석').length;
     const late = d.attendance.filter((a) => a.status === '지각' || a.status === '조퇴').length;
     const subjects = [...new Set(d.consultations.map((k) => k.subject || '공통'))];
@@ -787,7 +791,7 @@
           <button class="btn" id="consult">💬 상담 기록</button>
           <button class="btn" id="flag">🚨 걱정 표시</button>
           <button class="btn" onclick="window.print()">🖨️ 인쇄</button>
-          ${own ? '<button class="btn primary" id="edit">인적사항 고치기</button>' : ''}
+          ${edit ? '<button class="btn primary" id="edit">인적사항 고치기</button>' : ''}
         </div>
       </div>
 
@@ -801,12 +805,12 @@
               <td><b>${h(c.name)}</b><div class="small muted row" style="gap:6px">${withAvatar(c.teacher_id, c.teacher_photo_v, c.teacher_name, 18)} ${h(c.days || '')} ${h(c.start_time || '')}</div></td>
               ${v.fees ? `<td style="text-align:right;white-space:nowrap">${won(c.fee)}${c.fee_custom ? '<div class="small muted">개별 금액</div>' : ''}${own ? ` <button class="btn sm no-print" data-fee="${c.id}">수정</button>` : ''}</td>` : ''}</tr>`).join('')}</tbody></table>
             ${v.fees ? `<div class="row mt"><span class="muted">월 수강료 합계</span><span class="space"></span><b style="font-size:18px">${won(d.monthly_fee)}</b></div>` : ''}`
-            : `<div class="empty">아직 반에 들어가 있지 않아요${own ? ' — [반 관리]에서 넣어 주세요' : ''}</div>`}
+            : `<div class="empty">아직 반에 들어가 있지 않아요${edit ? ' — [반 관리]에서 넣어 주세요' : ''}</div>`}
           ${v.siblings ? `
           <h2 class="mt">형제·자매</h2>
-          <div class="row">${(d.siblings || []).map((x) => `<a class="sib" href="#/students/${x.id}">${sAvatar(x, 26)}<span><b>${h(x.name)}</b> <span class="small muted">${h(x.school || '')} ${h(x.grade || '')}</span></span>${statusChip(x.status)}${own ? `<button class="btn sm no-print" data-unsib="${x.id}" title="연결 끊기">✕</button>` : ''}</a>`).join('') || '<span class="muted small">우리 학원에 다니는 형제·자매가 없어요</span>'}</div>
+          <div class="row">${(d.siblings || []).map((x) => `<a class="sib" href="#/students/${x.id}">${sAvatar(x, 26)}<span><b>${h(x.name)}</b> <span class="small muted">${h(x.school || '')} ${h(x.grade || '')}</span></span>${statusChip(x.status)}${edit ? `<button class="btn sm no-print" data-unsib="${x.id}" title="연결 끊기">✕</button>` : ''}</a>`).join('') || '<span class="muted small">우리 학원에 다니는 형제·자매가 없어요</span>'}</div>
           ${s.sibling_note ? `<div class="small mt">📝 ${h(s.sibling_note)}</div>` : ''}
-          ${own ? '<button class="btn sm mt no-print" id="sib">＋ 형제·자매 연결</button>' : ''}` : ''}
+          ${edit ? '<button class="btn sm mt no-print" id="sib">＋ 형제·자매 연결</button>' : ''}` : ''}
         </div>
       </div>
 
@@ -864,7 +868,7 @@
       onSubmit: async (f) => { await api('POST', `/api/students/${id}/books`, f); toast('기록했어요'); reload(); },
     });
     $$('[data-delbook]', el).forEach((b) => (b.onclick = async () => { if (!confirm('이 교재 배부 기록을 지울까요?')) return; try { await api('DELETE', `/api/books/${b.dataset.delbook}`); reload(); } catch (e) { toast(e.message); } }));
-    if (!own) return;
+    if (!edit) return;
 
     $('#edit').onclick = () => modal({ title: '인적사항 고치기', wide: true, body: studentForm(s), onSubmit: async (f) => { await api('PATCH', `/api/students/${id}`, f); toast('저장했어요'); reload(); } });
     $$('[data-fee]', el).forEach((b) => (b.onclick = () => {
@@ -905,19 +909,20 @@
 
   // ───────── 반 관리 (원장) ─────────
   async function pageCourses(el) {
-    const [{ courses }, { teachers }] = await Promise.all([api('GET', '/api/courses?active=all'), api('GET', '/api/teachers')]);
+    const own = isOwner();
+    const [{ courses }, { teachers }] = await Promise.all([api('GET', '/api/courses?active=all'), own ? api('GET', '/api/teachers') : Promise.resolve({ teachers: [] })]);
     el.innerHTML = `
-      <div class="page-head"><div><h1>반 관리</h1><p>반을 만들고 담당 선생님과 학생을 넣어 주세요. 선생님은 자기 반 학생만 볼 수 있어요.</p></div>
-        <button class="btn primary" id="add">＋ 반 만들기</button></div>
+      <div class="page-head"><div><h1>${own ? '반 관리' : '반 학생 넣기'}</h1><p>${own ? '반을 만들고 담당 선생님과 학생을 넣어 주세요. 선생님은 자기 반 학생만 볼 수 있어요.' : '반마다 [학생 넣기]를 눌러 학생을 배정해 주세요. 반 만들기·수강료는 원장님이 정해요.'}</p></div>
+        ${own ? '<button class="btn primary" id="add">＋ 반 만들기</button>' : ''}</div>
       <div class="card"><div class="table-wrap"><table class="list">
-        <thead><tr><th>반 이름</th><th>과목</th><th>담당</th><th>요일·시간</th><th>월 수강료</th><th>학생</th><th></th></tr></thead>
+        <thead><tr><th>반 이름</th><th>과목</th><th>담당</th><th>요일·시간</th>${own ? '<th>월 수강료</th>' : ''}<th>학생</th><th></th></tr></thead>
         <tbody>${courses.map((c) => `<tr style="${c.active ? '' : 'opacity:.5'}">
           <td><b>${h(c.name)}</b>${c.active ? '' : ' <span class="chip">종료</span>'}${c.room ? `<div class="small muted">${h(c.room)}</div>` : ''}</td>
           <td>${h(c.subject)}</td><td>${c.teacher_name ? withAvatar(c.teacher_id, c.teacher_photo_v, c.teacher_name) : '-'}</td>
           <td>${h(c.days || '-')} ${h(c.start_time || '')}${c.end_time ? '~' + h(c.end_time) : ''}</td>
-          <td>${c.fee != null ? Number(c.fee).toLocaleString('ko-KR') + '원' : '-'}</td>
+          ${own ? `<td>${c.fee != null ? Number(c.fee).toLocaleString('ko-KR') + '원' : '-'}</td>` : ''}
           <td>${c.student_count}명</td>
-          <td style="text-align:right;white-space:nowrap"><button class="btn sm" data-stu="${c.id}">학생 넣기</button> <button class="btn sm" data-edit="${c.id}">고치기</button></td></tr>`).join('')}</tbody>
+          <td style="text-align:right;white-space:nowrap"><button class="btn sm" data-stu="${c.id}">학생 넣기</button>${own ? ` <button class="btn sm" data-edit="${c.id}">고치기</button>` : ''}</td></tr>`).join('')}</tbody>
       </table></div>${courses.length ? '' : '<div class="empty">아직 반이 없어요</div>'}</div>`;
     const byId = new Map(courses.map((c) => [c.id, c]));
     const form = (c = {}) => {
@@ -926,7 +931,7 @@
         <div class="grid g2">
           <label class="field"><span>반 이름</span><input type="text" name="name" value="${h(c.name)}" required placeholder="예: 중2 수학 A"></label>
           <label class="field"><span>과목</span><select name="subject" required>${SUBJECTS.map((s) => `<option ${c.subject === s ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
-          <label class="field"><span>담당 선생님</span><select name="teacher_id"><option value="">없음</option>${teachers.map((t) => `<option value="${t.id}" ${c.teacher_id === t.id ? 'selected' : ''}>${h(t.name)}${t.role === 'owner' ? ' (원장)' : ''}</option>`).join('')}</select></label>
+          <label class="field"><span>담당 선생님</span><select name="teacher_id"><option value="">없음</option>${teachers.map((t) => `<option value="${t.id}" ${c.teacher_id === t.id ? 'selected' : ''}>${h(t.name)}${t.role === 'owner' ? ' (원장)' : t.staff_role === 'manager' ? ' (감독)' : ''}</option>`).join('')}</select></label>
           <label class="field"><span>강의실</span><input type="text" name="room" value="${h(c.room)}" placeholder="예: 1관 201호"></label>
           <label class="field"><span>월 수강료 (기본)</span><input type="text" name="fee" inputmode="numeric" value="${h(c.fee ?? '')}" placeholder="예: 320000"></label>
         </div>
@@ -942,7 +947,7 @@
       days: ['월', '화', '수', '목', '금', '토', '일'].filter((x) => d['day_' + x]).join(','),
       ...(editing ? { active: !!d.active } : {}),
     });
-    $('#add').onclick = () => modal({ title: '반 만들기', wide: true, body: form(), onSubmit: async (d) => { await api('POST', '/api/courses', toBody(d)); toast('반을 만들었어요'); reload(); } });
+    if (own) $('#add').onclick = () => modal({ title: '반 만들기', wide: true, body: form(), onSubmit: async (d) => { await api('POST', '/api/courses', toBody(d)); toast('반을 만들었어요'); reload(); } });
     $$('[data-edit]', el).forEach((b) => (b.onclick = () => {
       const c = byId.get(Number(b.dataset.edit));
       modal({ title: '반 고치기', wide: true, body: form(c), onSubmit: async (d) => { await api('PATCH', `/api/courses/${c.id}`, toBody(d, true)); toast('저장했어요'); reload(); } });
@@ -1002,11 +1007,11 @@
   async function pageTeachers(el) {
     const { users } = await api('GET', '/api/users');
     el.innerHTML = `
-      <div class="page-head"><div><h1>선생님 계정</h1><p>선생님마다 아이디를 만들어 드리세요. 선생님은 자기 반 학생만 보고, 원장 전용 메뉴는 보이지 않아요.</p></div>
+      <div class="page-head"><div><h1>선생님 계정</h1><p>선생님마다 아이디를 만들어 드리세요. 강사는 자기 반 학생만 보고, 감독은 전체 학생을 보며 학생 등록·반 배정을 할 수 있어요. 원장 전용 메뉴와 수납은 원장님만 봐요.</p></div>
         <button class="btn primary" id="add">＋ 선생님 추가</button></div>
       <div class="card"><div class="table-wrap"><table class="list">
         <thead><tr><th></th><th>이름</th><th>아이디</th><th>역할</th><th>연락처</th><th>담당 반</th><th>상태</th><th></th></tr></thead>
-        <tbody>${users.map((u) => `<tr style="${u.active ? '' : 'opacity:.5'}"><td style="width:52px">${avatar(u.id, u.photo_v, u.name, 38)}</td><td><b>${h(u.name)}</b></td><td>${h(u.login_id)}</td><td>${u.role === 'owner' ? '<span class="chip gold">원장</span>' : '<span class="chip">강사</span>'}</td>
+        <tbody>${users.map((u) => `<tr style="${u.active ? '' : 'opacity:.5'}"><td style="width:52px">${avatar(u.id, u.photo_v, u.name, 38)}</td><td><b>${h(u.name)}</b></td><td>${h(u.login_id)}</td><td>${roleChip(u)}</td>
           <td>${h(fmtPhone(u.phone))}</td><td>${u.course_count}개</td><td>${u.active ? '<span class="chip green">사용 중</span>' : '<span class="chip">중지</span>'}</td>
           <td style="text-align:right"><button class="btn sm" data-edit="${u.id}">관리</button></td></tr>`).join('')}</tbody>
       </table></div></div>
@@ -1018,7 +1023,7 @@
         <label class="field"><span>아이디 (영어·숫자 3자 이상)</span><input type="text" name="login_id" required autocapitalize="off"></label>
         <label class="field"><span>처음 비밀번호 (8자 이상, 선생님께 알려 드리세요)</span><input type="text" name="password" required minlength="8"></label>
         <label class="field"><span>연락처 (선택)</span><input type="tel" name="phone"></label>
-        <label class="field"><span>역할</span><select name="role"><option value="teacher">강사</option><option value="owner">원장 (모든 권한)</option></select></label>`,
+        <label class="field"><span>역할</span><select name="role"><option value="teacher">강사 (자기 반 학생만)</option><option value="manager">감독 (전체 학생 열람·학생 등록·반 배정)</option><option value="owner">원장 (모든 권한)</option></select></label>`,
       onSubmit: async (d) => { await api('POST', '/api/users', d); toast('계정을 만들었어요'); reload(); },
     });
     $$('[data-edit]', el).forEach((b) => (b.onclick = () => {
@@ -1029,6 +1034,7 @@
           <label class="field"><span>이름</span><input type="text" name="name" value="${h(u.name)}" required></label>
           <label class="field"><span>연락처</span><input type="tel" name="phone" value="${h(fmtPhone(u.phone))}"></label>
           <label class="field"><span>새 비밀번호 (바꿀 때만 적어 주세요)</span><input type="text" name="password" minlength="8"></label>
+          ${u.role === 'teacher' ? `<label class="field"><span>역할</span><select name="role"><option value="teacher" ${u.staff_role !== 'manager' ? 'selected' : ''}>강사 (자기 반 학생만)</option><option value="manager" ${u.staff_role === 'manager' ? 'selected' : ''}>감독 (전체 학생 열람·학생 등록·반 배정)</option></select></label>` : ''}
           ${u.id === state.me.id ? '' : `<label class="inline-check"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> 사용 중 (끄면 로그인할 수 없어요)</label>`}`,
         onOpen: (f, close) => {
           $('[data-photo]', f).onclick = () => pickPhoto(u.id, () => { close(); if (u.id === state.me.id) renderShell(); reload(); });
@@ -1037,6 +1043,7 @@
         },
         onSubmit: async (d) => {
           const body = { name: d.name, phone: d.phone };
+          if (d.role) body.role = d.role;
           if (d.password) body.password = d.password;
           if (u.id !== state.me.id) body.active = !!d.active;
           await api('PATCH', `/api/users/${u.id}`, body);
@@ -1063,7 +1070,7 @@
         <label class="field"><span>출결 알림 — 쓸 수 있는 칸: {학원} {학생} {날짜} {반} {상태} {메모}</span><textarea name="tpl_attendance">${h(s.tpl_attendance)}</textarea></label>
         <label class="field"><span>피드백 — 쓸 수 있는 칸: {학원} {학생} {과목} {반} {내용} {선생님}</span><textarea name="tpl_feedback" style="min-height:120px">${h(s.tpl_feedback)}</textarea></label>
         <h2 class="mt">강사에게 보여 줄 학생 정보</h2>
-        <p class="small muted" style="margin-top:-6px">원장님은 항상 전부 볼 수 있어요. 강사는 체크한 항목만, 그리고 자기 반 학생만 볼 수 있어요. 수납 기록은 원장님만 쓸 수 있어요.</p>
+        <p class="small muted" style="margin-top:-6px">원장님은 항상 전부 볼 수 있어요. 강사는 체크한 항목만, 그리고 자기 반 학생만 볼 수 있어요. 감독은 전체 학생의 인적사항·연락처를 보고, 수강료·수납은 볼 수 없어요(주소는 이 체크를 따라요). 수납 기록은 원장님만 쓸 수 있어요.</p>
         <div class="view-grid">${Object.entries(s.teacher_view_labels).map(([k, l]) => `<label class="inline-check"><input type="checkbox" name="tv_${k}" ${s.teacher_view[k] ? 'checked' : ''}> ${h(l)}</label>`).join('')}</div>
         <h2 class="mt">문자 발송 방식</h2>
         <label class="inline-check" style="display:flex;margin-bottom:6px"><input type="radio" name="send_mode" value="preview" ${s.send_mode !== 'real' ? 'checked' : ''}> 미리보기 (연습용 — 실제로 나가지 않고 기록만 남아요)</label>
@@ -1089,7 +1096,7 @@
   // ───────── 내 정보 ─────────
   async function pageMe(el) {
     el.innerHTML = `
-      <div class="page-head"><div><h1>내 정보</h1><p>${h(state.me.name)} · ${state.me.role === 'owner' ? '원장' : '강사'} · 아이디 ${h(state.me.login_id)}</p></div></div>
+      <div class="page-head"><div><h1>내 정보</h1><p>${h(state.me.name)} · ${roleLabel(state.me)} · 아이디 ${h(state.me.login_id)}</p></div></div>
       <div class="card" style="max-width:440px">
         <h2>내 사진</h2>
         <div class="photo-edit">${avatar(state.me.id, state.me.photo_v, state.me.name, 72)}<div><button class="btn primary sm" id="photo">사진 올리기·바꾸기</button>${state.me.photo_v ? ' <button class="btn sm danger" id="nophoto">지우기</button>' : ''}<div class="small muted" style="margin-top:4px">다른 선생님과 원장님 화면에서 내 이름 옆에 나와요.</div></div></div>
@@ -1120,7 +1127,7 @@
     messages: { render: pageMessages },
     consultations: { render: pageConsultations },
     students: { render: pageStudents },
-    courses: { render: pageCourses, owner: true },
+    courses: { render: pageCourses, allow: () => isOwner() || isManager() },
     periods: { render: pagePeriods, owner: true },
     teachers: { render: pageTeachers, owner: true },
     settings: { render: pageSettings, owner: true },

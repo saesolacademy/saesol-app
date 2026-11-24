@@ -1,5 +1,5 @@
 # 새솔학원 관리 앱 설정 파일
-# 아래 database_id 한 줄만 원장님이 직접 바꾸시면 됩니다.
+# 데이터베이스 연결 정보가 들어 있어요. 고치지 마세요.
 
 name = "saesol-app"
 main = "src/index.js"
