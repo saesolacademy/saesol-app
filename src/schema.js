@@ -200,6 +200,7 @@ export const SCHEMA = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     student_id INTEGER NOT NULL,
     month TEXT NOT NULL,
+    kind TEXT,
     items TEXT,
     total INTEGER NOT NULL,
     status TEXT,
@@ -306,6 +307,7 @@ const MIGRATIONS = [
   'ALTER TABLE courses ADD COLUMN times TEXT',
   'ALTER TABLE payments ADD COLUMN ref TEXT',
   'ALTER TABLE book_deliveries ADD COLUMN book_id INTEGER',
+  'ALTER TABLE bills ADD COLUMN kind TEXT',
   'ALTER TABLE enrollments ADD COLUMN fee INTEGER',
   'ALTER TABLE consultations ADD COLUMN subject TEXT',
 ];

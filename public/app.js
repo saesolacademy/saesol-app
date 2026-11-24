@@ -947,7 +947,7 @@
     for (const f of d.feedbacks) tl.push({ type: '피드백', date: (f.sent_at || f.updated_at || '').slice(0, 10), subject: f.subject, html: `<div class="row"><b>${h(f.period_title)}</b>${statusChip(f.status)}</div><div class="content small">${h(f.content)}</div>` });
     for (const b of d.books || []) tl.push({ type: '교재', date: b.date, subject: b.subject || '공통', html: `<div class="row">${b.book_id ? bookImg(b.book_id, b.book_image_v, 26) : ''}<b>${h(b.title)}</b><span class="small muted">${b.qty}권 · ${won(b.price)} · ${h(b.given_by_name || '')}</span></div>` });
     for (const p of [...(d.tuition || []), ...(d.bookpay || [])]) tl.push({ type: '수납', date: p.paid_date, subject: '공통', html: `<div class="row"><b>${h(p.kind)}</b>${p.month ? `<span class="small muted">${h(p.month)}분</span>` : ''}<b>${won(p.amount)}</b><span class="small muted">${h(p.method || '')} ${h(p.memo || '')}</span></div>` });
-    for (const b of d.bills || []) tl.push({ type: '청구서', date: (b.sent_at || '').slice(0, 10), subject: '공통', html: `<div class="row"><b>${Number(b.month.slice(5))}월 청구서 ${won(b.total)}</b>${statusChip(b.status)}<span class="small muted">${h(b.sent_by_name || '')}</span></div>` });
+    for (const b of d.bills || []) tl.push({ type: '청구서', date: (b.sent_at || '').slice(0, 10), subject: '공통', html: `<div class="row"><b>${Number(b.month.slice(5))}월 ${b.kind === 'book' ? '교재비' : b.kind === 'tuition' ? '교육비' : ''} 청구서 ${won(b.total)}</b>${statusChip(b.status)}<span class="small muted">${h(b.sent_by_name || '')}</span></div>` });
     for (const x of d.subjects || []) {
       if (x.start_date) tl.push({ type: '등록·퇴원', date: x.start_date, subject: x.subject, html: `<div class="row"><b>${h(x.subject)} 등록</b></div>` });
       if (x.end_date) tl.push({ type: '등록·퇴원', date: x.end_date, subject: x.subject, html: `<div class="row"><b>${h(x.subject)} 퇴원</b></div>` });
@@ -1558,56 +1558,63 @@
 
   // ───────── 청구서 보내기 (원장) ─────────
   async function pageBills(el, _p, query) {
-    const month = query.month || todayStr().slice(0, 7);
-    const d = await api('GET', `/api/bills?month=${month}`);
-    const mm = Number(month.slice(5));
     const showAll = !!query.all;
+    const month = query.month || todayStr().slice(0, 7);
+    const kind = ['tuition', 'book', 'all'].includes(query.kind) ? query.kind : 'tuition';
+    const d = await api('GET', `/api/bills?month=${month}&kind=${kind}`);
+    const KL = { tuition: '교육비', book: '교재비', all: '교육비+교재비' };
+    const showT = kind !== 'book', showB = kind !== 'tuition';
+    const link = (patch) => '#/bills?' + new URLSearchParams(Object.entries({ month, kind, all: showAll ? '1' : '', ...patch }).filter(([, v]) => v)).toString();
+    const mm = Number(month.slice(5));
+
     const rows = showAll ? d.rows : d.rows.filter((r) => r.total > 0 || r.last_bill);
     const state = (r) => r.total === 0 ? (r.last_bill ? '<span class="chip green">청구 후 완납</span>' : '<span class="chip green">완납</span>')
       : r.last_bill ? `<span class="chip orange">청구함 · 미수납</span>` : '<span class="chip">청구 전</span>';
     el.innerHTML = `
-      <div class="page-head"><div><h1>청구서 보내기</h1><p>학생마다 ${mm}월 교육비(할인 반영)에서 낸 금액을 빼고, 교재비 미납을 더해 학부모님께 문자로 보내요.</p></div>
+      <div class="page-head"><div><h1>청구서 보내기</h1><p>교육비 청구서와 교재비 청구서를 따로 보낼 수 있어요. 보낸 기록과 상태도 종류별로 따로 남아요.</p></div>
         <div class="row"><input type="month" id="mon" value="${h(month)}" style="width:auto"></div></div>
       ${d.bank_account || d.bank_account_book ? '' : '<div class="banner info">🏦 입금 계좌가 아직 없어요. <a href="#/settings">설정</a>에서 교육비·교재비 입금 계좌를 넣어 주세요.</div>'}
+      <div class="tabs" style="margin-bottom:12px">${['tuition', 'book', 'all'].map((k) => `<a class="btn ${kind === k ? 'primary' : ''}" href="${link({ kind: k })}">${k === 'tuition' ? '💳 교육비 청구' : k === 'book' ? '📚 교재비 청구' : '🧾 함께 청구'}</a>`).join('')}</div>
       <div class="card">
-        <div class="row"><span class="small muted">보낼 금액 합계 <b>${won(rows.reduce((a, r) => a + r.total, 0))}</b> · ${rows.filter((r) => r.total > 0).length}명</span><span class="space"></span>
+        <div class="row"><span class="small muted"><b>${KL[kind]}</b> 청구서 · 보낼 금액 합계 <b>${won(rows.reduce((a, r) => a + r.total, 0))}</b> · ${rows.filter((r) => r.total > 0).length}명</span><span class="space"></span>
           <label class="inline-check small"><input type="checkbox" id="all" ${showAll ? 'checked' : ''}> 보낼 금액 없는 학생도 보기</label></div>
         <div class="table-wrap mt"><table class="list">
-          <thead><tr><th><input type="checkbox" id="pickAll"></th><th>학생</th><th style="text-align:right">월 수강료</th><th style="text-align:right">${mm}월 교육비 남음</th><th style="text-align:right">교재비 미납</th><th style="text-align:right">청구 금액</th><th>청구서 보낸 때</th><th>상태</th></tr></thead>
+          <thead><tr><th><input type="checkbox" id="pickAll"></th><th>학생</th>${showT ? `<th style="text-align:right">월 수강료</th><th style="text-align:right">${mm}월 교육비 남음</th>` : ''}${showB ? '<th style="text-align:right">교재비 미납</th>' : ''}<th style="text-align:right">청구 금액</th><th>청구서 보낸 때</th><th>상태</th></tr></thead>
           <tbody>${rows.map((r) => `<tr>
             <td><input type="checkbox" data-pick="${r.id}" ${r.total > 0 && r.has_phone ? '' : 'disabled'}></td>
             <td><a href="#/students/${r.id}"><b>${h(r.name)}</b></a> <span class="small muted">${h(r.school || '')} ${h(r.grade || '')}</span>${r.has_phone ? '' : ' <span class="chip red">번호 없음</span>'}</td>
-            <td style="text-align:right">${won(r.fee)}${r.discount ? `<div class="small muted">할인 -${won(r.discount)}</div>` : ''}</td>
-            <td style="text-align:right">${r.tuition_due ? `<b>${won(r.tuition_due)}</b>` : '-'}${r.paid ? `<div class="small muted">낸 금액 ${won(r.paid)}</div>` : ''}</td>
-            <td style="text-align:right">${r.book_due ? `<b>${won(r.book_due)}</b>` : '-'}</td>
+            ${showT ? `<td style="text-align:right">${won(r.fee)}${r.discount ? `<div class="small muted">할인 -${won(r.discount)}</div>` : ''}</td>
+            <td style="text-align:right">${r.tuition_due ? `<b>${won(r.tuition_due)}</b>` : '-'}${r.paid ? `<div class="small muted">낸 금액 ${won(r.paid)}</div>` : ''}</td>` : ''}
+            ${showB ? `<td style="text-align:right">${r.book_due ? `<b>${won(r.book_due)}</b>` : '-'}${!showT && r.recent_books ? `<div class="small muted">${h(r.recent_books)}</div>` : ''}</td>` : ''}
             <td style="text-align:right"><b style="font-size:15px">${won(r.total)}</b></td>
             <td class="small">${r.last_bill ? `${prettyTime(r.last_bill.sent_at)}<div class="muted">${won(r.last_bill.total)}${r.bill_count > 1 ? ` · ${r.bill_count}번째` : ''} ${r.last_bill.status === '미리보기' ? '(미리보기)' : ''}</div>` : '<span class="muted">-</span>'}</td>
-            <td>${state(r)}</td></tr>`).join('') || '<tr><td colspan="8" class="empty">보낼 청구서가 없어요</td></tr>'}</tbody></table></div>
-        <div class="sticky-bar row"><span id="pc">0명 선택</span><span class="space"></span><button class="btn" id="prev">문자 미리 보기</button><button class="btn primary" id="send" disabled>청구서 보내기</button></div>
+            <td>${state(r)}</td></tr>`).join('') || `<tr><td colspan="8" class="empty">보낼 ${KL[kind]} 청구서가 없어요</td></tr>`}</tbody></table></div>
+        <div class="sticky-bar row"><span id="pc">0명 선택</span><span class="space"></span><button class="btn" id="prev">문자 미리 보기</button><button class="btn primary" id="send" disabled>${KL[kind]} 청구서 보내기</button></div>
       </div>
       <div class="small muted mt">상태는 수납이 기록되는 대로 바뀌어요. 결제·입금 대조로 기록하면 "청구 후 완납"으로 바뀌어요.</div>`;
     const picked = () => $$('[data-pick]:checked', el).map((x) => Number(x.dataset.pick));
     const upd = () => { const n = picked().length; $('#pc').textContent = `${n}명 선택 · ${won(rows.filter((r) => picked().includes(r.id)).reduce((a, r) => a + r.total, 0))}`; $('#send').disabled = !n; };
     $$('[data-pick]', el).forEach((x) => (x.onchange = upd));
     $('#pickAll').onchange = (e) => { $$('[data-pick]:not(:disabled)', el).forEach((x) => (x.checked = e.target.checked)); upd(); };
-    $('#mon').onchange = (e) => (location.hash = `#/bills?month=${e.target.value}${showAll ? '&all=1' : ''}`);
-    $('#all').onchange = (e) => (location.hash = `#/bills?month=${month}${e.target.checked ? '&all=1' : ''}`);
+    $('#mon').onchange = (e) => (location.hash = link({ month: e.target.value }));
+    $('#all').onchange = (e) => (location.hash = link({ all: e.target.checked ? '1' : '' }));
     $('#prev').onclick = async () => {
       const r = rows.find((x) => picked().includes(x.id)) || rows.find((x) => x.total > 0);
       if (!r) return toast('미리 볼 학생이 없어요');
       const st = await api('GET', '/api/settings');
       const lines = [];
-      if (r.tuition_due) lines.push(`· ${mm}월 교육비 ${r.tuition_due.toLocaleString('ko-KR')}원${r.discount ? ` (할인 ${r.discount.toLocaleString('ko-KR')}원 적용)` : ''}${r.paid ? ` (이미 ${r.paid.toLocaleString('ko-KR')}원 납부)` : ''}`);
-      if (r.book_due) lines.push(`· 교재비 ${r.book_due.toLocaleString('ko-KR')}원${r.recent_books ? ` (${r.recent_books})` : ''}`);
-      const text = st.tpl_bill.replace(/\{([^{}]+)\}/g, (all, k) => ({ 학원: st.academy_name, 학생: r.name, 월: mm, 내역: lines.join('\n'), 합계: `${r.total.toLocaleString('ko-KR')}원`, 계좌: (() => { const t = st.bank_account || '', b = st.bank_account_book || ''; if (!t && !b) return '(학원으로 문의해 주세요)'; if (r.tuition_due && r.book_due && t && b && t !== b) return `\n· 교육비: ${t}\n· 교재비: ${b}`; if (r.book_due && !r.tuition_due) return b || t; return t || b; })() })[k] ?? all);
-      modal({ title: `${r.name} 청구서 미리 보기`, body: `<div class="preview">${h(text)}</div><p class="small muted">문구는 [설정 → 청구서 문구]에서 바꿀 수 있어요.</p>` });
+      const useT = showT && r.tuition_due > 0, useB = showB && r.book_due > 0;
+      if (useT) lines.push(`· ${mm}월 교육비 ${r.tuition_due.toLocaleString('ko-KR')}원${r.discount ? ` (할인 ${r.discount.toLocaleString('ko-KR')}원 적용)` : ''}${r.paid ? ` (이미 ${r.paid.toLocaleString('ko-KR')}원 납부)` : ''}`);
+      if (useB) lines.push(`· 교재비 ${r.book_due.toLocaleString('ko-KR')}원${r.recent_books ? ` (${r.recent_books})` : ''}`);
+      const text = st.tpl_bill.replace(/\{([^{}]+)\}/g, (all, k) => ({ 학원: st.academy_name, 학생: r.name, 월: mm, 내역: lines.join('\n'), 합계: `${r.total.toLocaleString('ko-KR')}원`, 계좌: (() => { const t = st.bank_account || '', b = st.bank_account_book || ''; if (!t && !b) return '(학원으로 문의해 주세요)'; if (useT && useB && t && b && t !== b) return `\n· 교육비: ${t}\n· 교재비: ${b}`; if (useB && !useT) return b || t; return t || b; })() })[k] ?? all);
+      modal({ title: `${r.name} ${KL[kind]} 청구서 미리 보기`, body: `<div class="preview">${h(text)}</div><p class="small muted">문구는 [설정 → 청구서 문구]에서 바꿀 수 있어요.</p>` });
     };
     $('#send').onclick = async () => {
       const ids = picked();
-      if (!confirm(`${ids.length}명에게 ${mm}월 청구서를 보낼까요?`)) return;
+      if (!confirm(`${ids.length}명에게 ${KL[kind]} 청구서를 보낼까요?`)) return;
       $('#send').disabled = true;
       try {
-        const r = await api('POST', '/api/bills/send', { month, student_ids: ids });
+        const r = await api('POST', '/api/bills/send', { month, kind, student_ids: ids });
         toast(`${r.sent}명에게 보냈어요${r.failed ? `, ${r.failed}명 실패` : ''}`);
         reload();
       } catch (e) { toast(e.message); $('#send').disabled = false; }

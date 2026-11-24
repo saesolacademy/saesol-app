@@ -1289,7 +1289,9 @@ function accountText(settings, hasTuition, hasBook) {
 }
 
 // 이번 달 교육비(할인 반영) 남은 금액 + 교재비 미납을 학부모님께 문자로 보냅니다.
-async function billRows(db, month) {
+// kind: tuition(교육비만) / book(교재비만) / all(함께)
+const BILL_KINDS = ['tuition', 'book', 'all'];
+async function billRows(db, month, kind = 'all') {
   const rows = await q.all(
     db,
     `SELECT s.id, s.name, s.school, s.grade, s.photo_v, s.father_phone, s.mother_phone, s.sms_target,
@@ -1302,9 +1304,9 @@ async function billRows(db, month) {
     month, `${month}-01`
   );
   const disc = await discountTotals(db);
-  const last = new Map((await q.all(db, `SELECT student_id, MAX(id) AS id FROM bills WHERE month = ? GROUP BY student_id`, month)).map((r) => [r.student_id, r.id]));
+  const last = new Map((await q.all(db, `SELECT student_id, MAX(id) AS id FROM bills WHERE month = ? AND IFNULL(kind, 'all') = ? GROUP BY student_id`, month, kind)).map((r) => [r.student_id, r.id]));
   const lastBills = last.size ? new Map((await q.all(db, `SELECT * FROM bills WHERE id IN (${[...last.values()].join(',')})`)).map((b) => [b.student_id, b])) : new Map();
-  const counts = new Map((await q.all(db, `SELECT student_id, COUNT(*) AS n FROM bills WHERE month = ? GROUP BY student_id`, month)).map((r) => [r.student_id, r.n]));
+  const counts = new Map((await q.all(db, `SELECT student_id, COUNT(*) AS n FROM bills WHERE month = ? AND IFNULL(kind, 'all') = ? GROUP BY student_id`, month, kind)).map((r) => [r.student_id, r.n]));
   return rows.map((r) => {
     const discount = disc.get(r.id) || 0;
     const fee = Math.max(0, r.gross - discount);
@@ -1314,7 +1316,7 @@ async function billRows(db, month) {
     return {
       id: r.id, name: r.name, school: r.school, grade: r.grade, photo_v: r.photo_v, has_phone: recipients(r).length > 0,
       gross: r.gross, discount, fee, paid: r.paid, tuition_due, book_due, recent_books: r.recent_books,
-      total: tuition_due + book_due,
+      total: kind === 'tuition' ? tuition_due : kind === 'book' ? book_due : tuition_due + book_due,
       last_bill: b ? { sent_at: b.sent_at, total: b.total, status: b.status } : null,
       bill_count: counts.get(r.id) || 0,
       _r: r,
@@ -1323,9 +1325,10 @@ async function billRows(db, month) {
 }
 route('GET', '/api/bills', async ({ db, query }) => {
   const month = /^\d{4}-\d{2}$/.test(query.month || '') ? query.month : today().slice(0, 7);
-  const rows = (await billRows(db, month)).map(({ _r, ...x }) => x);
+  const kind = BILL_KINDS.includes(query.kind) ? query.kind : 'tuition';
+  const rows = (await billRows(db, month, kind)).map(({ _r, ...x }) => x);
   const s = await getSettings(db);
-  return { month, rows, bank_account: s.bank_account || '', bank_account_book: s.bank_account_book || '' };
+  return { month, kind, rows, bank_account: s.bank_account || '', bank_account_book: s.bank_account_book || '' };
 }, OWNER);
 route('POST', '/api/bills/send', async ({ db, env, user, body }) => {
   const month = /^\d{4}-\d{2}$/.test(body.month || '') ? body.month : today().slice(0, 7);
@@ -1333,15 +1336,17 @@ route('POST', '/api/bills/send', async ({ db, env, user, body }) => {
   if (!ids.size) fail(400, '청구서를 보낼 학생을 골라 주세요');
   const settings = await getSettings(db);
   const mm = Number(month.slice(5));
-  const targets = (await billRows(db, month)).filter((r) => ids.has(r.id) && r.total > 0);
+  const kind = BILL_KINDS.includes(body.kind) ? body.kind : 'tuition';
+  const targets = (await billRows(db, month, kind)).filter((r) => ids.has(r.id) && r.total > 0);
   if (!targets.length) fail(400, '보낼 금액이 있는 학생이 없어요 (이미 다 냈어요)');
   const msgs = [];
   const billInfo = [];
   for (const t of targets) {
     const lines = [];
-    if (t.tuition_due) lines.push(`· ${mm}월 교육비 ${t.tuition_due.toLocaleString('ko-KR')}원${t.discount ? ` (할인 ${t.discount.toLocaleString('ko-KR')}원 적용)` : ''}${t.paid ? ` (이미 ${t.paid.toLocaleString('ko-KR')}원 납부)` : ''}`);
-    if (t.book_due) lines.push(`· 교재비 ${t.book_due.toLocaleString('ko-KR')}원${t.recent_books ? ` (${t.recent_books})` : ''}`);
-    const text = fillTemplate(settings.tpl_bill, { 학원: settings.academy_name, 학생: t.name, 월: mm, 내역: lines.join('\n'), 합계: `${t.total.toLocaleString('ko-KR')}원`, 계좌: accountText(settings, !!t.tuition_due, !!t.book_due) });
+    const useT = kind !== 'book' && t.tuition_due > 0, useB = kind !== 'tuition' && t.book_due > 0;
+    if (useT) lines.push(`· ${mm}월 교육비 ${t.tuition_due.toLocaleString('ko-KR')}원${t.discount ? ` (할인 ${t.discount.toLocaleString('ko-KR')}원 적용)` : ''}${t.paid ? ` (이미 ${t.paid.toLocaleString('ko-KR')}원 납부)` : ''}`);
+    if (useB) lines.push(`· 교재비 ${t.book_due.toLocaleString('ko-KR')}원${t.recent_books ? ` (${t.recent_books})` : ''}`);
+    const text = fillTemplate(settings.tpl_bill, { 학원: settings.academy_name, 학생: t.name, 월: mm, 내역: lines.join('\n'), 합계: `${t.total.toLocaleString('ko-KR')}원`, 계좌: accountText(settings, useT, useB) });
     const parts = messagesFor(t._r, { kind: '청구서', text, ref_type: 'bill' });
     msgs.push(...parts);
     billInfo.push({ t, lines, n: parts.length });
@@ -1354,7 +1359,7 @@ route('POST', '/api/bills/send', async ({ db, env, user, body }) => {
     const rs = results.slice(k, k + bi.n);
     k += bi.n;
     const status = rs.some((x) => x.status === '발송') ? '발송' : rs.some((x) => x.status === '미리보기') ? '미리보기' : '실패';
-    stmts.push(db.prepare('INSERT INTO bills (student_id, month, items, total, status, sent_by) VALUES (?, ?, ?, ?, ?, ?)').bind(bi.t.id, month, JSON.stringify({ tuition: bi.t.tuition_due, book: bi.t.book_due, discount: bi.t.discount, lines: bi.lines }), bi.t.total, status, user.id));
+    stmts.push(db.prepare('INSERT INTO bills (student_id, month, kind, items, total, status, sent_by) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(bi.t.id, month, kind, JSON.stringify({ tuition: kind === 'book' ? 0 : bi.t.tuition_due, book: kind === 'tuition' ? 0 : bi.t.book_due, discount: bi.t.discount, lines: bi.lines }), bi.t.total, status, user.id));
     out.push({ student_id: bi.t.id, name: bi.t.name, total: bi.t.total, status, error: (rs.find((x) => x.error) || {}).error || null });
   }
   await db.batch(stmts);
