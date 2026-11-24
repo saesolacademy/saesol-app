@@ -585,14 +585,13 @@
       <div class="page-head"><div><h1>📝 단어시험 채점</h1><p>채점한 시험지를 찍고 맞은 개수만 누르면 돼요. 결과와 시험지가 학생·담당 선생님께 가고, 수업 일지에 기록돼요.</p></div>
         <input type="date" id="wdate" value="${h(date)}" style="width:auto"></div>
       <div class="card">
-        ${todayData.courses.length ? `<div class="course-pick">${todayData.courses.map((c) => `<button data-wc="${c.id}" class="${c.id === courseId ? 'on' : ''}"><b>${h(c.name)}</b><span class="small muted">${h(c.start_time || '')} ${h(c.teacher_name || '')}</span></button>`).join('')}</div>` : '<div class="muted small">이 날짜에 잡힌 영어 수업이 없어요. 아래에서 반을 골라 주세요.</div>'}
-        ${others.length ? `<div class="row mt"><span class="small muted">다른 영어 반</span><select id="wother" style="width:auto"><option value="">선택</option>${others.map((c) => `<option value="${c.id}" ${c.id === courseId ? 'selected' : ''}>${h(c.name)}</option>`).join('')}</select></div>` : ''}
+        <div class="small muted" style="margin-bottom:8px">영어 반 ${all.courses.length}개${todayData.courses.length ? ` · 오늘 수업 ${todayData.courses.length}개는 앞에 있어요` : ''}</div>
+        <div class="course-pick">${[...todayData.courses.map((c) => ({ ...c, today: true })), ...others].map((c) => `<button data-wc="${c.id}" class="${c.id === courseId ? 'on' : ''}"><b>${h(c.name)}</b><span class="small muted">${c.today ? `오늘 ${h(c.start_time || '')} · ` : ''}${h(c.teacher_name || '')}</span>${c.today ? '<span class="chip green" style="margin-top:4px">오늘</span>' : ''}</button>`).join('')}</div>
       </div>
       <div id="wbox"></div>`;
     const go = (cid, dt = date) => (location.hash = `#/word?date=${dt}${cid ? `&course=${cid}` : ''}`);
     $('#wdate').onchange = (e) => go(courseId, e.target.value);
     $$('[data-wc]', el).forEach((b) => (b.onclick = () => go(b.dataset.wc)));
-    if ($('#wother')) $('#wother').onchange = (e) => e.target.value && go(e.target.value);
     if (courseId) await renderWordClass($('#wbox'), courseId, date);
   }
 
