@@ -14,3 +14,7 @@ directory = "./public"
 binding = "DB"
 database_name = "saesol-db"
 database_id = "a5edc1af-5e1e-44ee-b92b-d4be9fbe0567"
+
+# 30분마다 "수업 일지 안 쓴 반"을 확인해서 선생님께 알려요
+[triggers]
+crons = ["*/30 * * * *"]

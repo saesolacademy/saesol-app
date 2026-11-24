@@ -217,7 +217,7 @@
   const NAV = [
     { group: null, items: [['', '🏠', '대시보드']] },
     { group: '원장 전용', owner: true, items: [['teachers', '👥', '선생님 계정'], ['courses', '🗂️', '반 관리'], ['periods', '🗓️', '피드백 기간'], ['bills', '🧾', '청구서 보내기'], ['payimport', '💳', '결제·입금 대조'], ['settings', '⚙️', '설정']] },
-    { group: '학생 관리', items: [['attendance', '✅', '출결·수업 일지'], ['feedback', '📝', '피드백 작성'], ['risks', '🚨', '이탈 신호 관리'], ['messages', '📨', '피드백·문자 발송 기록'], ['consultations', '💬', '상담 정리']] },
+    { group: '학생 관리', items: [['attendance', '✅', '출결·수업 일지'], ['logs', '📒', '일지 모아 보기'], ['progress', '📈', '진도표'], ['feedback', '📝', '피드백 작성'], ['risks', '🚨', '이탈 신호 관리'], ['messages', '📨', '피드백·문자 발송 기록'], ['consultations', '💬', '상담 정리']] },
     { group: '기본 정보', items: [['students', '🎒', '학생 명부'], ['books', '📚', '교재 관리'], ['courses', '🗂️', '반 학생 넣기', 'manager']] },
   ];
 
@@ -290,7 +290,9 @@
     const [y, m, dd] = d.today.split('-');
     const alertTxt = s.today_alerts.length ? s.today_alerts.map((a) => `${a.status} ${a.n}`).join(' · ') : '지각·결석 없음';
     const checked = s.today_courses.filter((c) => c.checked_count > 0).length;
+    const ml = d.missing_logs || [];
     el.innerHTML = `
+      ${ml.length ? `<div class="banner warn">📘 <b>아직 안 쓴 수업 일지 ${ml.length}개</b> — ${ml.slice(0, 3).map((m) => `<a href="#/attendance?date=${m.date}&course=${m.course_id}">${prettyDate(m.date)} ${h(m.course_name)}${isOwner() || isManager() ? ` (${h(m.teacher_name || '')})` : ''}</a>`).join(', ')}${ml.length > 3 ? ` 외 ${ml.length - 3}개` : ''} <a href="#/logs" class="space-l">모아 보기 →</a></div>` : ''}
       ${d.send_mode === 'preview' ? `<div class="banner info">🔔 지금은 <b>미리보기 모드</b>예요. 문자가 실제로 나가지 않고 발송 기록에만 남아요.${isOwner() ? ' <a href="#/settings">설정에서 바꾸기</a>' : ''}</div>` : ''}
       <section class="hero">
         <div class="date">${y}년 ${Number(m)}월 ${Number(dd)}일 ${d.weekday}요일</div>
@@ -370,31 +372,153 @@
 
   // ───────── 수업 일지 ─────────
   async function renderLog(box, courseId, date) {
-    const [{ log, notes, recent }, att] = await Promise.all([api('GET', `/api/classlog?course_id=${courseId}&date=${date}`), api('GET', `/api/attendance?course_id=${courseId}&date=${date}`)]);
-    const noteOf = new Map(notes.map((n) => [n.student_id, n.note]));
+    const [{ log, notes, recent, units, hw_miss }, att] = await Promise.all([api('GET', `/api/classlog?course_id=${courseId}&date=${date}`), api('GET', `/api/attendance?course_id=${courseId}&date=${date}`)]);
+    const noteOf = new Map(notes.map((n) => [n.student_id, n]));
+    const missOf = new Map(hw_miss.map((x) => [x.student_id, x]));
+    const logId = log ? log.id : -1;
+    const openUnits = units.filter((u) => !u.done_date || u.done_log_id === logId);
+    const doneN = units.filter((u) => u.done_date).length;
+    const seg = (name, opts, val) => `<div class="seg sm">${opts.map(([v, l]) => `<button type="button" data-seg="${name}" data-v="${v}" class="${val === v ? 'on' : ''}">${l}</button>`).join('')}<input type="hidden" name="${name}" value="${h(val || '')}"></div>`;
     box.innerHTML = `
       <div class="card mt">
-        <div class="row"><h2 style="margin:0">📘 ${prettyDate(date)} 수업 일지</h2><span class="space"></span>${log ? `<span class="small muted">${h(log.teacher_name || '')} · ${prettyTime(log.updated_at)} 저장</span>` : '<span class="chip">아직 안 씀</span>'}</div>
+        <div class="row"><h2 style="margin:0">📘 ${prettyDate(date)} 수업 일지</h2><span class="space"></span>${log ? `<span class="small muted">${h(log.teacher_name || '')} · ${prettyTime(log.updated_at)} 저장</span>` : '<span class="chip orange">아직 안 씀</span>'}</div>
         <form id="logf" class="mt">
           <label class="field"><span>수업 내용 · 진도</span><textarea name="content" placeholder="예: 일차함수 그래프 그리기, 교재 p.38~44">${h(log ? log.content || '' : '')}</textarea></label>
+          <div class="field"><span class="small muted">오늘 나간 단원 (진도표) · ${units.length ? `진도율 ${Math.round((doneN / units.length) * 100)}% (${doneN}/${units.length})` : '아직 진도표가 없어요'} <a href="#" id="editUnits">진도표 ${units.length ? '고치기' : '만들기'}</a></span>
+            ${openUnits.length ? `<div class="days" style="margin-top:6px">${openUnits.map((u) => `<label class="${u.done_log_id === logId ? 'on' : ''}"><input type="checkbox" name="u_${u.id}" ${u.done_log_id === logId ? 'checked' : ''}> ${h(u.title)}${u.planned_date ? ` <span class="small ${u.planned_date < date && !u.done_date ? 'red-t' : 'muted'}">${u.planned_date.slice(5).replace('-', '/')}</span>` : ''}</label>`).join('')}</div>` : units.length ? '<div class="small muted" style="margin-top:4px">🎉 모든 단원을 마쳤어요</div>' : ''}
+          </div>
           <label class="field"><span>숙제</span><input type="text" name="homework" value="${h(log ? log.homework || '' : '')}" placeholder="예: 쎈 p.45~50"></label>
-          ${att.rows.length ? `<div class="field"><span class="small muted">학생별 메모 (선생님들끼리만 봐요 · 학부모 문자로 나가지 않아요)</span>
-            <table class="list">${att.rows.map((r) => `<tr><td style="width:150px"><div class="row" style="flex-wrap:nowrap">${sAvatar({ id: r.student_id, name: r.name, photo_v: r.photo_v }, 26)}<b>${h(r.name)}</b></div></td>
-              <td style="width:70px">${r.status ? statusChip(r.status) : ''}</td>
-              <td><input type="text" name="note_${r.student_id}" value="${h(noteOf.get(r.student_id) || '')}" placeholder="예: 숙제 안 해 옴, 질문 많이 함"></td></tr>`).join('')}</table></div>` : ''}
+          ${att.rows.length ? `<div class="field"><div class="row"><span class="small muted">학생별 숙제 검사 · 성취도 · 메모 (선생님들끼리만 봐요 · 학부모 문자로 나가지 않아요)</span><span class="space"></span><button type="button" class="btn sm" id="hwAll">숙제 모두 ○</button></div>
+            <div class="table-wrap"><table class="list logtable"><thead><tr><th>학생</th><th>출결</th><th>숙제 검사</th><th>성취도</th><th>메모</th></tr></thead><tbody>${att.rows.map((r) => {
+              const n = noteOf.get(r.student_id) || {};
+              const m = missOf.get(r.student_id);
+              return `<tr data-sid="${r.student_id}"><td style="min-width:130px"><div class="row" style="flex-wrap:nowrap">${sAvatar({ id: r.student_id, name: r.name, photo_v: r.photo_v }, 26)}<div><b>${h(r.name)}</b>${m && m.miss ? `<div class="small red-t">최근 숙제 × ${m.miss}번</div>` : ''}</div></div></td>
+                <td>${r.status ? statusChip(r.status) : '<span class="muted small">-</span>'}</td>
+                <td>${seg('hw_' + r.student_id, [['○', '○'], ['△', '△'], ['×', '×']], n.hw)}</td>
+                <td>${seg('ach_' + r.student_id, [['상', '상'], ['중', '중'], ['하', '하']], n.achieve)}</td>
+                <td style="min-width:200px"><input type="text" name="note_${r.student_id}" value="${h(n.note || '')}" placeholder="예: 질문 많이 함, 계산 실수"></td></tr>`;
+            }).join('')}</tbody></table></div></div>` : ''}
           <div class="row"><span class="space"></span><button class="btn primary">일지 저장</button></div>
         </form>
         ${recent.length ? `<div class="small muted mt"><b>지난 수업</b>${recent.map((x) => `<div style="margin-top:4px">${prettyDate(x.date)} — ${h(x.content || '')}${x.homework ? ` · 숙제: ${h(x.homework)}` : ''}</div>`).join('')}</div>` : ''}
       </div>`;
+    $$('[data-seg]', box).forEach((b) => (b.onclick = () => {
+      const wrap = b.parentElement, hid = $('input[type=hidden]', wrap);
+      const on = !b.classList.contains('on');
+      $$('button', wrap).forEach((x) => x.classList.remove('on'));
+      if (on) b.classList.add('on');
+      hid.value = on ? b.dataset.v : '';
+    }));
+    $$('.days input', box).forEach((cb) => (cb.onchange = () => cb.parentElement.classList.toggle('on', cb.checked)));
+    if ($('#hwAll', box)) $('#hwAll', box).onclick = () => $$('[data-seg^="hw_"][data-v="○"]', box).forEach((b) => { if (!b.classList.contains('on')) b.click(); });
+    $('#editUnits', box).onclick = (e) => { e.preventDefault(); unitsModal(courseId, () => renderLog(box, courseId, date)); };
     $('#logf', box).onsubmit = async (e) => {
       e.preventDefault();
       const f = Object.fromEntries(new FormData(e.target));
-      const notesBody = att.rows.map((r) => ({ student_id: r.student_id, note: f['note_' + r.student_id] || '' }));
+      const notesBody = att.rows.map((r) => ({ student_id: r.student_id, note: f['note_' + r.student_id] || '', hw: f['hw_' + r.student_id] || '', achieve: f['ach_' + r.student_id] || '' }));
+      const unit_ids = Object.keys(f).filter((k) => k.startsWith('u_')).map((k) => Number(k.slice(2)));
       try {
-        await api('PUT', '/api/classlog', { course_id: courseId, date, content: f.content, homework: f.homework, notes: notesBody });
+        await api('PUT', '/api/classlog', { course_id: courseId, date, content: f.content, homework: f.homework, notes: notesBody, unit_ids });
         toast('수업 일지를 저장했어요');
         renderLog(box, courseId, date);
       } catch (err) { toast(err.message); }
+    };
+  }
+
+  // 진도표 고치기: 한 줄에 한 단원, "단원명 | 예정일(선택)"
+  async function unitsModal(courseId, done) {
+    const { course, units } = await api('GET', `/api/courses/${courseId}/units`);
+    const text = units.map((u) => `${u.title}${u.planned_date ? ' | ' + u.planned_date : ''}`).join('\n');
+    modal({
+      title: `${course.name} 진도표`, wide: true, submitText: '진도표 저장',
+      body: `<p class="small muted" style="margin-top:0">한 줄에 한 단원씩 적어 주세요. 예정일은 <b>| 2026-12-05</b>처럼 뒤에 붙여요(선택). 순서대로 진도가 나가요. 이미 끝난 단원 기록은 그대로 남아요.</p>
+        <textarea name="units" style="min-height:260px" placeholder="1단원 다항식의 연산 | 2026-12-01&#10;2단원 나머지정리 | 2026-12-08&#10;3단원 인수분해">${h(text)}</textarea>
+        ${units.some((u) => u.done_date) ? `<div class="small muted">완료된 단원: ${units.filter((u) => u.done_date).map((u) => `${h(u.title)}(${u.done_date.slice(5)})`).join(', ')}</div>` : ''}`,
+      onSubmit: async (f) => {
+        const byTitle = new Map(units.map((u) => [u.title, u.id]));
+        const list = String(f.units || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => {
+          const [t, d] = l.split('|').map((x) => x.trim());
+          const m = (d || '').match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+          return { id: byTitle.get(t) || null, title: t, planned_date: m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : null };
+        });
+        const r = await api('PUT', `/api/courses/${courseId}/units`, { units: list });
+        toast(`단원 ${r.count}개를 저장했어요`);
+        done && done();
+      },
+    });
+  }
+
+  // ───────── 진도표 ─────────
+  async function pageProgress(el, parts) {
+    if (parts[0]) return pageProgressCourse(el, Number(parts[0]));
+    const { courses } = await api('GET', '/api/progress');
+    el.innerHTML = `
+      <div class="page-head"><div><h1>진도표</h1><p>반마다 단원 계획을 넣어 두면, 수업 일지에서 체크한 단원으로 진도율이 자동 계산돼요.${isOwner() || isManager() ? '' : ' 내 반만 보여요.'}</p></div></div>
+      <div class="card"><div class="table-wrap"><table class="list">
+        <thead><tr><th>반</th><th>담당</th><th style="width:34%">진도</th><th>다음 단원</th><th>최근 일지</th><th></th></tr></thead>
+        <tbody>${courses.map((c) => {
+          const pct = c.total ? Math.round((c.done / c.total) * 100) : 0;
+          return `<tr><td><span class="chip">${h(c.subject)}</span> <b>${h(c.name)}</b></td><td>${withAvatar(c.teacher_id, c.teacher_photo_v, c.teacher_name, 20)}</td>
+            <td>${c.total ? `<div class="bar"><div style="width:${pct}%"></div></div><div class="small muted">${pct}% · ${c.done}/${c.total}단원${c.late ? ` · <span class="red-t">예정보다 늦은 단원 ${c.late}개</span>` : ''}</div>` : '<span class="small muted">진도표 없음</span>'}</td>
+            <td class="small">${h(c.next_unit || (c.total ? '모두 완료 🎉' : '-'))}</td><td class="small">${c.last_log ? prettyDate(c.last_log) : '-'}</td>
+            <td style="text-align:right"><a class="btn sm" href="#/progress/${c.id}">${c.total ? '보기' : '만들기'}</a></td></tr>`;
+        }).join('') || '<tr><td colspan="6" class="empty">반이 없어요</td></tr>'}</tbody></table></div></div>`;
+  }
+  async function pageProgressCourse(el, id) {
+    const { course, units } = await api('GET', `/api/courses/${id}/units`);
+    const done = units.filter((u) => u.done_date).length, now = todayStr();
+    el.innerHTML = `
+      <div><a href="#/progress" class="small muted">← 진도표</a></div>
+      <div class="page-head mt"><div><h1>${h(course.name)} 진도표</h1><p>${units.length ? `진도율 ${Math.round((done / units.length) * 100)}% · ${done}/${units.length}단원` : '아직 단원이 없어요. [진도표 고치기]로 넣어 주세요.'}</p></div>
+        <button class="btn primary" id="eu">진도표 고치기</button></div>
+      ${units.length ? `<div class="card"><table class="list"><thead><tr><th>#</th><th>단원</th><th>예정일</th><th>나간 날</th><th></th></tr></thead><tbody>${units.map((u, i) => `
+        <tr><td class="muted">${i + 1}</td><td><b>${h(u.title)}</b></td>
+        <td class="${u.planned_date && !u.done_date && u.planned_date < now ? 'red-t' : ''}">${h(u.planned_date || '-')}</td>
+        <td>${u.done_date ? `<span class="chip green">✓ ${h(u.done_date)}</span>` : '<span class="muted small">아직</span>'}</td>
+        <td style="text-align:right"><button class="btn sm" data-tg="${u.id}" data-done="${u.done_date ? 0 : 1}">${u.done_date ? '완료 취소' : '완료로 표시'}</button></td></tr>`).join('')}</tbody></table></div>` : ''}`;
+    $('#eu').onclick = () => unitsModal(id, reload);
+    $$('[data-tg]', el).forEach((b) => (b.onclick = async () => { await api('PATCH', `/api/units/${b.dataset.tg}`, { done: b.dataset.done === '1' }); reload(); }));
+  }
+
+  // ───────── 수업 일지 모아 보기 ─────────
+  async function pageLogs(el, _p, query) {
+    const qs = new URLSearchParams(Object.entries({ from: query.from, to: query.to, course_id: query.course, teacher_id: query.teacher }).filter(([, v]) => v)).toString();
+    const [d, { courses }] = await Promise.all([api('GET', '/api/logs' + (qs ? '?' + qs : '')), api('GET', '/api/courses')]);
+    const all = isOwner() || isManager();
+    const days = [...new Set([...d.logs.map((l) => l.date), ...d.missing.map((m) => m.date)])].sort().reverse();
+    const chips = (l) => [
+      l.student_count ? `<span class="chip">출석 ${l.present}/${l.student_count}${l.absent ? ` · 결석 ${l.absent}` : ''}</span>` : '',
+      l.hw_o + l.hw_p + l.hw_x ? `<span class="chip ${l.hw_x ? 'orange' : 'green'}">숙제 ○${l.hw_o} △${l.hw_p} ×${l.hw_x}</span>` : '',
+      l.ach_h + l.ach_m + l.ach_l ? `<span class="chip blue">성취 상${l.ach_h} 중${l.ach_m} 하${l.ach_l}</span>` : '',
+    ].join(' ');
+    el.innerHTML = `
+      <div class="page-head"><div><h1>수업 일지 모아 보기</h1><p>${all ? '모든 반의 일지를 날짜별로 모아 봐요. 수업이 있었는데 일지가 없는 반은 빨간색으로 보여요.' : '내 반 일지를 모아 봐요.'}</p></div></div>
+      <form class="card row" id="lf">
+        <input type="date" name="from" value="${h(d.from)}" style="width:auto"> ~ <input type="date" name="to" value="${h(d.to)}" style="width:auto">
+        <select name="course" style="width:auto"><option value="">모든 반</option>${courses.map((c) => `<option value="${c.id}" ${String(c.id) === query.course ? 'selected' : ''}>${h(c.name)}</option>`).join('')}</select>
+        ${all ? `<select name="teacher" style="width:auto"><option value="">모든 선생님</option>${d.teachers.map((t) => `<option value="${t.id}" ${String(t.id) === query.teacher ? 'selected' : ''}>${h(t.name)}</option>`).join('')}</select>` : ''}
+        <button class="btn">보기</button><span class="space"></span>
+        <span class="small muted">일지 ${d.logs.length}개 · <b class="${d.missing.length ? 'red-t' : ''}">안 쓴 일지 ${d.missing.length}개</b></span>
+      </form>
+      ${d.missing.length ? `<div class="card mt missbox"><h2>⚠️ 아직 안 쓴 수업 일지 ${d.missing.length}개</h2>
+        <table class="list"><tbody>${d.missing.map((m) => `<tr><td>${prettyDate(m.date)}</td><td><b>${h(m.course_name)}</b> <span class="small muted">${h([m.start, m.end].filter(Boolean).join('~'))}</span></td><td>${withAvatar(m.teacher_id, m.teacher_photo_v, m.teacher_name, 20)}</td>
+          <td style="text-align:right"><a class="btn sm primary" href="#/attendance?date=${m.date}&course=${m.course_id}">일지 쓰기</a></td></tr>`).join('')}</tbody></table></div>` : ''}
+      ${days.map((day) => {
+        const ls = d.logs.filter((l) => l.date === day);
+        const ms = d.missing.filter((m) => m.date === day);
+        return `<div class="mt"><div class="tl-month">${prettyDate(day)}</div>${ls.map((l) => `
+          <div class="card logcard">
+            <div class="row"><span class="chip">${h(l.subject)}</span><b>${h(l.course_name)}</b>${withAvatar(l.teacher_id, l.teacher_photo_v, l.teacher_name, 20)}<span class="space"></span>${chips(l)}
+              <a class="btn sm" href="#/attendance?date=${l.date}&course=${l.course_id}">열기</a></div>
+            ${l.content ? `<div class="content">📖 ${h(l.content)}</div>` : ''}
+            ${l.units ? `<div class="small" style="margin-top:4px">📈 진도: ${h(l.units)}</div>` : ''}
+            ${l.homework ? `<div class="small" style="margin-top:4px">✏️ 숙제: ${h(l.homework)}</div>` : ''}
+          </div>`).join('')}${ms.map((m) => `<div class="card logcard miss"><div class="row"><span class="chip red">일지 없음</span><b>${h(m.course_name)}</b>${withAvatar(m.teacher_id, m.teacher_photo_v, m.teacher_name, 20)}<span class="small muted">${h([m.start, m.end].filter(Boolean).join('~'))}</span><span class="space"></span><a class="btn sm" href="#/attendance?date=${m.date}&course=${m.course_id}">일지 쓰기</a></div></div>`).join('')}</div>`;
+      }).join('') || '<div class="card empty mt">이 기간에는 수업이 없어요</div>'}`;
+    $('#lf').onsubmit = (e) => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      location.hash = '#/logs?' + new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString();
     };
   }
 
@@ -941,7 +1065,7 @@
       <div class="content">${h(k.content)}</div>${k.follow_up ? `<div class="follow ${k.follow_up_done ? 'done' : ''}">📌 ${h(k.follow_up)}</div>` : ''}` });
     for (const l of d.logs) tl.push({ type: '수업 일지', date: l.date, subject: l.subject, html: `
       <div class="row"><b>${h(l.course_name)}</b>${l.att_status ? statusChip(l.att_status) : ''}${withAvatar(l.teacher_id, l.teacher_photo_v, l.teacher_name, 20)}</div>
-      ${l.content ? `<div class="content">📖 ${h(l.content)}</div>` : ''}${l.homework ? `<div class="content small">✏️ 숙제: ${h(l.homework)}</div>` : ''}${l.note ? `<div class="follow">🗒️ ${h(l.note)}</div>` : ''}` });
+      ${l.content ? `<div class="content">📖 ${h(l.content)}</div>` : ''}${l.homework ? `<div class="content small">✏️ 숙제: ${h(l.homework)}</div>` : ''}${l.hw || l.achieve ? `<div class="row" style="margin-top:4px">${l.hw ? `<span class="chip ${l.hw === '×' ? 'red' : l.hw === '△' ? 'orange' : 'green'}">숙제 ${h(l.hw)}</span>` : ''}${l.achieve ? `<span class="chip blue">성취도 ${h(l.achieve)}</span>` : ''}</div>` : ''}${l.note ? `<div class="follow">🗒️ ${h(l.note)}</div>` : ''}` });
     const logged = new Set(d.logs.map((l) => `${l.date}|${l.course_name}`));
     for (const a of d.attendance) if (a.status !== '출석' && !logged.has(`${a.date}|${a.course_name}`)) tl.push({ type: '출결', date: a.date, subject: a.subject, html: `<div class="row">${statusChip(a.status)}<span>${h(a.course_name)}</span><span class="small muted">${h(a.memo || '')}</span></div>` });
     for (const f of d.feedbacks) tl.push({ type: '피드백', date: (f.sent_at || f.updated_at || '').slice(0, 10), subject: f.subject, html: `<div class="row"><b>${h(f.period_title)}</b>${statusChip(f.status)}</div><div class="content small">${h(f.content)}</div>` });
@@ -973,7 +1097,9 @@
       ts && tile(`💳 ${mm}월 교육비`, ts.state === '완납' ? '완납' : ts.state === '부분' ? `${won(ts.due)} 남음` : ts.state === '미납' ? '미납' : '-', ts.fee ? `${won(ts.fee)} 중 ${won(ts.paid)} 납부` : '수강료 미정', ts.state === '미납' || ts.state === '부분' ? 'warn' : ''),
       bs && tile('📚 교재비', bs.due ? `${won(bs.due)} 미납` : '정산 완료', `배부 ${won(bs.total)} · 납부 ${won(bs.paid)}`, bs.due ? 'warn' : ''),
       tile('💬 상담', d.consultations[0] ? prettyDate(d.consultations[0].date) : '없음', pendingFollow.length ? `📌 할 일 ${pendingFollow.length}건 남음` : `모두 ${d.consultations.length}건`),
-      tile('📘 최근 수업', lastLog ? prettyDate(lastLog.date) : '없음', lastLog ? h(lastLog.homework ? '숙제: ' + lastLog.homework : lastLog.course_name) : '수업 일지가 아직 없어요'),
+      (() => { const l30 = d.logs.filter((l) => l.date >= since30); const x = l30.filter((l) => l.hw === '×').length, p = l30.filter((l) => l.hw === '△').length, chk = l30.filter((l) => l.hw).length;
+        const ach = l30.filter((l) => l.achieve); const last = ach[0];
+        return tile('✏️ 숙제·성취도 (30일)', chk ? `×${x}<small> / ${chk}번</small>` : '-', `${p ? `일부 ${p}번 · ` : ''}${last ? `최근 성취도 ${h(last.achieve)}` : lastLog ? '최근 수업 ' + prettyDate(lastLog.date) : '수업 일지가 아직 없어요'}`, x >= 3 ? 'warn' : ''); })(),
       tile('🚨 이탈 신호', openFlags.length ? `${openFlags.length}건` : '없음', openFlags.length ? h(openFlags[0].reason) : '걱정 표시 없음', openFlags.length ? 'warn' : ''),
     ].filter(Boolean);
 
@@ -1353,6 +1479,14 @@
         <label class="field"><span>💳 교육비 청구서 문구</span><textarea name="tpl_bill_tuition" style="min-height:130px">${h(s.tpl_bill_tuition)}</textarea></label>
         <label class="field"><span>📚 교재비 청구서 문구</span><textarea name="tpl_bill_book" style="min-height:130px">${h(s.tpl_bill_book)}</textarea></label>
         <label class="field"><span>🧾 함께 청구할 때 문구</span><textarea name="tpl_bill" style="min-height:130px">${h(s.tpl_bill)}</textarea></label>
+        <h2 class="mt">수업 일지 알림</h2>
+        <p class="small muted" style="margin-top:-6px">수업이 끝나고 정한 시간이 지나도 일지가 없으면 그 선생님 대시보드에 알림이 뜨고, 문자도 보낼 수 있어요. 문자는 30분마다 확인해서 한 수업에 한 번만 보내요. (선생님 연락처가 [선생님 계정]에 있어야 해요)</p>
+        <div class="row" style="gap:14px">
+          <label class="inline-check"><input type="checkbox" name="lr_on" ${s.log_remind.on ? 'checked' : ''}> 알림 켜기</label>
+          <label class="inline-check">수업 끝나고 <input type="text" name="lr_after" value="${s.log_remind.after_min}" inputmode="numeric" style="width:70px"> 분 뒤</label>
+          <label class="inline-check"><input type="checkbox" name="lr_sms" ${s.log_remind.sms ? 'checked' : ''}> 선생님께 문자도 보내기</label>
+        </div>
+        <label class="field mt"><span>알림 문자 문구 — 쓸 수 있는 칸: {학원} {선생님} {반} {시간} {날짜}</span><textarea name="tpl_log_remind" style="min-height:70px">${h(s.tpl_log_remind)}</textarea></label>
         <h2 class="mt">강사에게 보여 줄 학생 정보</h2>
         <p class="small muted" style="margin-top:-6px">원장님은 항상 전부 볼 수 있어요. 강사는 체크한 항목만, 그리고 자기 반 학생만 볼 수 있어요. 감독은 전체 학생의 인적사항·연락처를 보고, 수강료·수납은 볼 수 없어요(주소는 이 체크를 따라요). 수납 기록은 원장님만 쓸 수 있어요.</p>
         <div class="view-grid">${Object.entries(s.teacher_view_labels).map(([k, l]) => `<label class="inline-check"><input type="checkbox" name="tv_${k}" ${s.teacher_view[k] ? 'checked' : ''}> ${h(l)}</label>`).join('')}</div>
@@ -1380,7 +1514,7 @@
         const teacher_view = Object.fromEntries(Object.keys(s.teacher_view_labels).map((k) => [k, !!d['tv_' + k]]));
         const discount_items = $$('.disc-row', e.target).map((r) => ({ id: $('[data-did]', r).value, name: $('[data-dname]', r).value, amount: $('[data-damt]', r).value })).filter((x) => x.name.trim());
         const book_suppliers = String(d.suppliers || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-        await api('PUT', '/api/settings', { academy_name: d.academy_name, mottos: [d.motto0, d.motto1, d.motto2], tpl_attendance: d.tpl_attendance, tpl_feedback: d.tpl_feedback, send_mode: d.send_mode, teacher_view, discount_items, book_suppliers, bank_account: d.bank_account, bank_account_book: d.bank_account_book, tpl_bill: d.tpl_bill, tpl_bill_tuition: d.tpl_bill_tuition, tpl_bill_book: d.tpl_bill_book });
+        await api('PUT', '/api/settings', { academy_name: d.academy_name, mottos: [d.motto0, d.motto1, d.motto2], tpl_attendance: d.tpl_attendance, tpl_feedback: d.tpl_feedback, send_mode: d.send_mode, teacher_view, discount_items, book_suppliers, bank_account: d.bank_account, bank_account_book: d.bank_account_book, tpl_bill: d.tpl_bill, tpl_bill_tuition: d.tpl_bill_tuition, tpl_bill_book: d.tpl_bill_book, log_remind: { on: !!d.lr_on, after_min: d.lr_after, sms: !!d.lr_sms }, tpl_log_remind: d.tpl_log_remind });
         state.academy = d.academy_name;
         toast('저장했어요');
         renderShell();
@@ -1884,6 +2018,8 @@
     payimport: { render: pagePayImport, owner: true },
     bills: { render: pageBills, owner: true },
     books: { render: pageBooks },
+    logs: { render: pageLogs },
+    progress: { render: pageProgress },
     me: { render: pageMe },
   };
 

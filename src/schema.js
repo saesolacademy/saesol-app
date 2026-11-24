@@ -153,6 +153,8 @@ export const SCHEMA = [
     log_id INTEGER NOT NULL,
     student_id INTEGER NOT NULL,
     note TEXT,
+    hw TEXT,
+    achieve TEXT,
     PRIMARY KEY (log_id, student_id)
   )`,
   // 학생별 할인 (항목과 금액은 설정의 discount_items)
@@ -207,6 +209,23 @@ export const SCHEMA = [
     sent_by INTEGER,
     sent_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
+  // 진도표: 반마다 단원 계획
+  `CREATE TABLE IF NOT EXISTS course_units (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    course_id INTEGER NOT NULL,
+    seq INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL,
+    planned_date TEXT,
+    done_date TEXT,
+    done_log_id INTEGER
+  )`,
+  // 일지 알림 보낸 기록 (같은 수업에 두 번 보내지 않게)
+  `CREATE TABLE IF NOT EXISTS log_reminders (
+    course_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    sent_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (course_id, date)
+  )`,
   // 교재 배부 내역
   `CREATE TABLE IF NOT EXISTS book_deliveries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -247,6 +266,8 @@ export const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_deliv_book ON book_deliveries (book_id)`,
   `CREATE INDEX IF NOT EXISTS idx_stock_book ON book_stock (book_id)`,
   `CREATE INDEX IF NOT EXISTS idx_bills_student ON bills (student_id, month)`,
+  `CREATE INDEX IF NOT EXISTS idx_units_course ON course_units (course_id, seq)`,
+  `CREATE INDEX IF NOT EXISTS idx_logs_date ON class_logs (date)`,
   `CREATE INDEX IF NOT EXISTS idx_pay_student ON payments (student_id, kind)`,
   `CREATE INDEX IF NOT EXISTS idx_students_family ON students (family_id)`,
 ];
@@ -270,6 +291,9 @@ export const DEFAULT_SETTINGS = {
     { id: 'd5', name: '가족할인', amount: 30000 },
   ]),
   book_suppliers: JSON.stringify(['샘터서점', '대한서정', '러닝북스', '조이매스', '인터넷 총판']),
+  // 수업 일지 알림: 수업이 끝나고 after_min 분이 지나도 일지가 없으면 알림
+  log_remind: JSON.stringify({ on: true, after_min: 60, sms: true }),
+  tpl_log_remind: '[{학원}] {선생님}쌤, 오늘 {반} ({시간}) 수업 일지가 아직 없어요. 시간 되실 때 작성 부탁드려요 🙏',
   bank_account: '',
   bank_account_book: '',
   tpl_bill_tuition: '[{학원}] {학생} 학생 {월}월 교육비 안내\n\n{내역}\n합계 {합계}\n\n입금 계좌: {계좌}\n이미 납부하셨다면 이 문자는 넘겨 주세요. 감사합니다.',
@@ -310,6 +334,8 @@ const MIGRATIONS = [
   'ALTER TABLE payments ADD COLUMN ref TEXT',
   'ALTER TABLE book_deliveries ADD COLUMN book_id INTEGER',
   'ALTER TABLE bills ADD COLUMN kind TEXT',
+  'ALTER TABLE class_log_notes ADD COLUMN hw TEXT',
+  'ALTER TABLE class_log_notes ADD COLUMN achieve TEXT',
   'ALTER TABLE enrollments ADD COLUMN fee INTEGER',
   'ALTER TABLE consultations ADD COLUMN subject TEXT',
 ];

@@ -435,7 +435,7 @@ route('GET', '/api/students/:id', async ({ db, user, params }) => {
     courses: q.all(db, `SELECT c.id, c.name, c.subject, c.days, c.times, c.start_time, c.end_time, c.teacher_id, c.fee AS course_fee, e.fee AS own_fee, c.active, u.name AS teacher_name, u.photo_v AS teacher_photo_v
                         FROM enrollments e JOIN courses c ON c.id = e.course_id LEFT JOIN users u ON u.id = c.teacher_id WHERE e.student_id = ? ORDER BY c.active DESC, c.subject`, id),
     attendance: q.all(db, `SELECT a.date, a.status, a.memo, c.name AS course_name, c.subject FROM attendance a JOIN courses c ON c.id = a.course_id WHERE a.student_id = ? AND a.date >= ? ORDER BY a.date DESC`, id, addDays(today(), -180)),
-    logs: q.all(db, `SELECT l.id, l.date, l.content, l.homework, l.course_id, c.name AS course_name, c.subject, u.name AS teacher_name, u.photo_v AS teacher_photo_v, l.teacher_id, n.note, a.status AS att_status
+    logs: q.all(db, `SELECT l.id, l.date, l.content, l.homework, l.course_id, c.name AS course_name, c.subject, u.name AS teacher_name, u.photo_v AS teacher_photo_v, l.teacher_id, n.note, n.hw, n.achieve, a.status AS att_status
                      FROM class_logs l JOIN enrollments e ON e.course_id = l.course_id AND e.student_id = ?
                      JOIN courses c ON c.id = l.course_id LEFT JOIN users u ON u.id = l.teacher_id
                      LEFT JOIN class_log_notes n ON n.log_id = l.id AND n.student_id = ?
@@ -1374,9 +1374,13 @@ route('GET', '/api/classlog', async ({ db, user, query }) => {
   const course = await mustSeeCourse(db, user, Number(query.course_id));
   const date = isDate(query.date) ? query.date : today();
   const log = await q.first(db, `SELECT l.*, u.name AS teacher_name FROM class_logs l LEFT JOIN users u ON u.id = l.teacher_id WHERE l.course_id = ? AND l.date = ?`, course.id, date);
-  const notes = log ? await q.all(db, 'SELECT student_id, note FROM class_log_notes WHERE log_id = ?', log.id) : [];
+  const notes = log ? await q.all(db, 'SELECT student_id, note, hw, achieve FROM class_log_notes WHERE log_id = ?', log.id) : [];
   const recent = await q.all(db, `SELECT date, content, homework FROM class_logs WHERE course_id = ? AND date < ? ORDER BY date DESC LIMIT 3`, course.id, date);
-  return { log, notes, recent };
+  const units = await q.all(db, 'SELECT * FROM course_units WHERE course_id = ? ORDER BY seq, id', course.id);
+  // 지난 수업 숙제 검사 누적 (최근 30일 × 횟수)
+  const hwMiss = await q.all(db, `SELECT n.student_id, SUM(CASE WHEN n.hw = '×' THEN 1 ELSE 0 END) AS miss, SUM(CASE WHEN n.hw = '△' THEN 1 ELSE 0 END) AS part
+    FROM class_log_notes n JOIN class_logs l ON l.id = n.log_id WHERE l.course_id = ? AND l.date >= ? AND l.date < ? GROUP BY n.student_id`, course.id, addDays(date, -30), date);
+  return { log, notes, recent, units, hw_miss: hwMiss };
 });
 
 route('PUT', '/api/classlog', async ({ db, user, body }) => {
@@ -1384,8 +1388,10 @@ route('PUT', '/api/classlog', async ({ db, user, body }) => {
   const date = isDate(body.date) ? body.date : today();
   const content = clean(body.content);
   const homework = clean(body.homework);
-  const notes = (body.notes || []).map((n) => ({ sid: Number(n.student_id), note: clean(n.note) }));
-  if (!content && !homework && !notes.some((n) => n.note)) fail(400, '수업 내용이나 숙제를 적어 주세요');
+  const HW = ['○', '△', '×'], ACH = ['상', '중', '하'];
+  const notes = (body.notes || []).map((n) => ({ sid: Number(n.student_id), note: clean(n.note), hw: HW.includes(n.hw) ? n.hw : null, achieve: ACH.includes(n.achieve) ? n.achieve : null }));
+  const unitIds = [...new Set((body.unit_ids || []).map(Number).filter(Boolean))];
+  if (!content && !homework && !notes.some((n) => n.note || n.hw || n.achieve) && !unitIds.length) fail(400, '수업 내용이나 숙제를 적어 주세요');
   await q.run(
     db,
     `INSERT INTO class_logs (course_id, date, teacher_id, content, homework, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))
@@ -1397,13 +1403,154 @@ route('PUT', '/api/classlog', async ({ db, user, body }) => {
   const stmts = [];
   for (const n of notes) {
     if (!enrolled.has(n.sid)) continue;
-    stmts.push(n.note
-      ? db.prepare('INSERT INTO class_log_notes (log_id, student_id, note) VALUES (?, ?, ?) ON CONFLICT (log_id, student_id) DO UPDATE SET note = excluded.note').bind(log.id, n.sid, n.note)
+    stmts.push(n.note || n.hw || n.achieve
+      ? db.prepare('INSERT INTO class_log_notes (log_id, student_id, note, hw, achieve) VALUES (?, ?, ?, ?, ?) ON CONFLICT (log_id, student_id) DO UPDATE SET note = excluded.note, hw = excluded.hw, achieve = excluded.achieve').bind(log.id, n.sid, n.note, n.hw, n.achieve)
       : db.prepare('DELETE FROM class_log_notes WHERE log_id = ? AND student_id = ?').bind(log.id, n.sid));
+  }
+  // 진도: 이 일지에서 체크한 단원을 "완료"로, 체크를 푼 단원은 되돌림
+  if (Array.isArray(body.unit_ids)) {
+    stmts.push(db.prepare('UPDATE course_units SET done_date = NULL, done_log_id = NULL WHERE course_id = ? AND done_log_id = ?').bind(course.id, log.id));
+    for (const uid of unitIds) stmts.push(db.prepare('UPDATE course_units SET done_date = ?, done_log_id = ? WHERE id = ? AND course_id = ? AND (done_log_id IS NULL OR done_log_id = ?)').bind(date, log.id, uid, course.id, log.id));
   }
   if (stmts.length) await db.batch(stmts);
   return { ok: true, id: log.id };
 });
+
+// ───────── 진도표 ─────────
+async function mustEditCourse(db, user, courseId) {
+  const c = await mustSeeCourse(db, user, courseId);
+  return c; // 원장·감독은 모든 반, 강사는 자기 반
+}
+route('GET', '/api/progress', async ({ db, user }) => {
+  const where = seesAll(user) ? '' : 'AND c.teacher_id = ?';
+  const params = seesAll(user) ? [] : [user.id];
+  const rows = await q.all(db, `SELECT c.id, c.name, c.subject, c.teacher_id, u.name AS teacher_name, u.photo_v AS teacher_photo_v,
+      (SELECT COUNT(*) FROM course_units x WHERE x.course_id = c.id) AS total,
+      (SELECT COUNT(*) FROM course_units x WHERE x.course_id = c.id AND x.done_date IS NOT NULL) AS done,
+      (SELECT COUNT(*) FROM course_units x WHERE x.course_id = c.id AND x.done_date IS NULL AND x.planned_date IS NOT NULL AND x.planned_date < ?) AS late,
+      (SELECT title FROM course_units x WHERE x.course_id = c.id AND x.done_date IS NULL ORDER BY seq, id LIMIT 1) AS next_unit,
+      (SELECT MAX(date) FROM class_logs l WHERE l.course_id = c.id) AS last_log
+     FROM courses c LEFT JOIN users u ON u.id = c.teacher_id WHERE c.active = 1 ${where} ORDER BY c.subject, c.name`, today(), ...params);
+  return { courses: rows };
+});
+route('GET', '/api/courses/:id/units', async ({ db, user, params }) => {
+  const course = await mustSeeCourse(db, user, Number(params.id));
+  const units = await q.all(db, 'SELECT * FROM course_units WHERE course_id = ? ORDER BY seq, id', course.id);
+  return { course, units };
+});
+// 진도표 통째로 저장: [{id?, title, planned_date}] 순서대로. 이미 완료된 단원 기록은 지켜요.
+route('PUT', '/api/courses/:id/units', async ({ db, user, body, params }) => {
+  const course = await mustEditCourse(db, user, Number(params.id));
+  const list = (body.units || []).map((u) => ({ id: Number(u.id) || null, title: clean(u.title), planned_date: isDate(u.planned_date) ? u.planned_date : null })).filter((u) => u.title);
+  if (list.length > 300) fail(400, '단원은 300개까지 넣을 수 있어요');
+  const existing = new Set((await q.all(db, 'SELECT id FROM course_units WHERE course_id = ?', course.id)).map((r) => r.id));
+  const keep = new Set(list.filter((u) => u.id && existing.has(u.id)).map((u) => u.id));
+  const stmts = [...existing].filter((id) => !keep.has(id)).map((id) => db.prepare('DELETE FROM course_units WHERE id = ?').bind(id));
+  list.forEach((u, i) => stmts.push(u.id && existing.has(u.id)
+    ? db.prepare('UPDATE course_units SET seq = ?, title = ?, planned_date = ? WHERE id = ?').bind(i, u.title, u.planned_date, u.id)
+    : db.prepare('INSERT INTO course_units (course_id, seq, title, planned_date) VALUES (?, ?, ?, ?)').bind(course.id, i, u.title, u.planned_date)));
+  if (stmts.length) await db.batch(stmts);
+  return { ok: true, count: list.length };
+});
+route('PATCH', '/api/units/:id', async ({ db, user, body, params }) => {
+  const u = await q.first(db, 'SELECT * FROM course_units WHERE id = ?', Number(params.id));
+  if (!u) fail(404, '단원을 찾을 수 없어요');
+  await mustEditCourse(db, user, u.course_id);
+  const done = body.done ? (isDate(body.done_date) ? body.done_date : today()) : null;
+  await q.run(db, 'UPDATE course_units SET done_date = ?, done_log_id = NULL WHERE id = ?', done, u.id);
+  return { ok: true };
+});
+
+// ───────── 수업 일지 모아 보기 / 안 쓴 일지 ─────────
+function nowKST() {
+  const d = new Date(Date.now() + 9 * 3600e3);
+  return { date: d.toISOString().slice(0, 10), time: d.toISOString().slice(11, 16) };
+}
+const plusMin = (hhmm, m) => {
+  const [h, mi] = String(hhmm).split(':').map(Number);
+  const t = h * 60 + mi + m;
+  return t >= 24 * 60 ? '23:59' : `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+};
+function remindSettings(s) {
+  try { return { on: true, after_min: 60, sms: true, ...JSON.parse(s.log_remind || '{}') }; } catch { return { on: true, after_min: 60, sms: true }; }
+}
+// from~to 사이에 수업이 있었는데 일지가 없는 반 (오늘은 수업이 끝나고 after_min 분이 지난 것만)
+async function missingLogs(db, { from, to, teacherId = null, courseId = null, afterMin = 0 }) {
+  const now = nowKST();
+  if (to > now.date) to = now.date;
+  if (from > to) return [];
+  const courses = await q.all(db, `SELECT c.id, c.name, c.subject, c.days, c.times, c.start_time, c.end_time, c.teacher_id, u.name AS teacher_name, u.phone AS teacher_phone, u.photo_v AS teacher_photo_v
+    FROM courses c LEFT JOIN users u ON u.id = c.teacher_id WHERE c.active = 1 ${teacherId ? 'AND c.teacher_id = ?' : ''} ${courseId ? 'AND c.id = ?' : ''}`, ...[teacherId, courseId].filter(Boolean));
+  if (!courses.length) return [];
+  const have = new Set((await q.all(db, 'SELECT course_id, date FROM class_logs WHERE date BETWEEN ? AND ?', from, to)).map((r) => `${r.course_id}|${r.date}`));
+  const out = [];
+  for (let d = from; d <= to; d = addDays(d, 1)) {
+    const wd = weekdayOf(d);
+    for (const c of courses) {
+      if (!(',' + (c.days || '') + ',').includes(',' + wd + ',')) continue;
+      if (have.has(`${c.id}|${d}`)) continue;
+      const t = timeOn(c, wd);
+      if (d === now.date) {
+        const endAt = t.end || t.start;
+        if (!endAt || plusMin(endAt, afterMin) > now.time) continue;
+      }
+      out.push({ course_id: c.id, course_name: c.name, subject: c.subject, date: d, start: t.start, end: t.end, teacher_id: c.teacher_id, teacher_name: c.teacher_name, teacher_photo_v: c.teacher_photo_v, teacher_phone: c.teacher_phone });
+    }
+  }
+  return out.sort((a, b) => b.date.localeCompare(a.date) || (a.start || '').localeCompare(b.start || ''));
+}
+
+route('GET', '/api/logs', async ({ db, user, query }) => {
+  const to = isDate(query.to) ? query.to : today();
+  let from = isDate(query.from) ? query.from : addDays(to, -6);
+  if (diffDays(to, from) > 62) from = addDays(to, -62);
+  const params = [from, to];
+  let extra = '';
+  if (!seesAll(user)) (extra += ' AND c.teacher_id = ?'), params.push(user.id);
+  else if (query.teacher_id) (extra += ' AND c.teacher_id = ?'), params.push(Number(query.teacher_id));
+  if (query.course_id) (extra += ' AND c.id = ?'), params.push(Number(query.course_id));
+  const logs = await q.all(db, `SELECT l.*, c.name AS course_name, c.subject, u.name AS teacher_name, u.photo_v AS teacher_photo_v,
+      (SELECT COUNT(*) FROM enrollments e JOIN students s ON s.id = e.student_id WHERE e.course_id = c.id AND s.status = '재원') AS student_count,
+      (SELECT COUNT(*) FROM attendance a WHERE a.course_id = c.id AND a.date = l.date AND a.status IN ('출석','지각','조퇴')) AS present,
+      (SELECT COUNT(*) FROM attendance a WHERE a.course_id = c.id AND a.date = l.date AND a.status = '결석') AS absent,
+      (SELECT COUNT(*) FROM class_log_notes n WHERE n.log_id = l.id AND n.hw = '○') AS hw_o,
+      (SELECT COUNT(*) FROM class_log_notes n WHERE n.log_id = l.id AND n.hw = '△') AS hw_p,
+      (SELECT COUNT(*) FROM class_log_notes n WHERE n.log_id = l.id AND n.hw = '×') AS hw_x,
+      (SELECT COUNT(*) FROM class_log_notes n WHERE n.log_id = l.id AND n.achieve = '상') AS ach_h,
+      (SELECT COUNT(*) FROM class_log_notes n WHERE n.log_id = l.id AND n.achieve = '중') AS ach_m,
+      (SELECT COUNT(*) FROM class_log_notes n WHERE n.log_id = l.id AND n.achieve = '하') AS ach_l,
+      (SELECT group_concat(x.title, ', ') FROM course_units x WHERE x.done_log_id = l.id) AS units
+     FROM class_logs l JOIN courses c ON c.id = l.course_id LEFT JOIN users u ON u.id = l.teacher_id
+     WHERE l.date BETWEEN ? AND ? ${extra} ORDER BY l.date DESC, c.name`, ...params);
+  const missing = await missingLogs(db, { from, to, teacherId: !seesAll(user) ? user.id : query.teacher_id ? Number(query.teacher_id) : null, courseId: query.course_id ? Number(query.course_id) : null });
+  for (const m of missing) delete m.teacher_phone;
+  const teachers = seesAll(user) ? await q.all(db, `SELECT id, name FROM users WHERE role IN ('owner','teacher') AND active = 1 ORDER BY name`) : [];
+  return { from, to, logs, missing, teachers };
+});
+
+// 일지 안 쓴 수업 → 선생님께 문자 (크론이 30분마다 부름)
+async function runLogReminders(env) {
+  const db = env.DB;
+  await ensureSchema(db);
+  const settings = await getSettings(db);
+  const rs = remindSettings(settings);
+  if (!rs.on || !rs.sms) return { sent: 0 };
+  const now = nowKST();
+  const list = await missingLogs(db, { from: now.date, to: now.date, afterMin: Number(rs.after_min) || 0 });
+  if (!list.length) return { sent: 0 };
+  const done = new Set((await q.all(db, 'SELECT course_id FROM log_reminders WHERE date = ?', now.date)).map((r) => r.course_id));
+  const todo = list.filter((m) => !done.has(m.course_id) && m.teacher_id);
+  if (!todo.length) return { sent: 0 };
+  const msgs = todo.map((m) => ({
+    kind: '일지 알림', student_id: null, to: phone(m.teacher_phone), ref_type: 'course', ref_id: m.course_id,
+    text: fillTemplate(settings.tpl_log_remind, { 학원: settings.academy_name, 선생님: m.teacher_name || '', 반: m.course_name, 시간: [m.start, m.end].filter(Boolean).join('~'), 날짜: prettyDate(m.date) }),
+  }));
+  await sendMessages(env, db, settings, null, msgs);
+  await db.batch(todo.map((m) => db.prepare('INSERT OR IGNORE INTO log_reminders (course_id, date) VALUES (?, ?)').bind(m.course_id, m.date)));
+  return { sent: todo.length };
+}
+// 원장님이 바로 확인해 볼 수 있게
+route('POST', '/api/logs/remind-now', async ({ env }) => runLogReminders(env), OWNER);
 
 // ───────── 피드백 기간 ─────────
 
@@ -1756,8 +1903,12 @@ route('GET', '/api/dashboard', async ({ db, user }) => {
   const consultPending = await q.first(db, `SELECT COUNT(*) AS n FROM consultations k WHERE k.follow_up IS NOT NULL AND k.follow_up != '' AND k.follow_up_done = 0 AND ${sc3.sql}`, ...sc3.params);
 
   const risks = await computeRisks(db, user);
+  const rset = remindSettings(settings);
+  const missLogs = rset.on ? await missingLogs(db, { from: addDays(now, -6), to: now, teacherId: seesAll(user) ? null : user.id, afterMin: Number(rset.after_min) || 0 }) : [];
+  for (const m of missLogs) delete m.teacher_phone;
 
   return {
+    missing_logs: missLogs.slice(0, 30),
     user: publicUser(user),
     academy_name: settings.academy_name,
     mottos: parseMottos(settings),
@@ -1786,7 +1937,7 @@ route('GET', '/api/settings', async ({ db, env, user }) => {
   const s = await getSettings(db);
   const view = await viewOf(db, { role: 'teacher' });
   if (user.role !== 'owner') return { academy_name: s.academy_name, mottos: parseMottos(s), teacher_view: view };
-  return { ...s, mottos: parseMottos(s), teacher_view: view, teacher_view_labels: TEACHER_VIEW_LABELS, solapi_ready: solapiReady(env), discount_items: discountItems(s), book_suppliers: suppliersOf(s) };
+  return { ...s, mottos: parseMottos(s), teacher_view: view, teacher_view_labels: TEACHER_VIEW_LABELS, solapi_ready: solapiReady(env), discount_items: discountItems(s), book_suppliers: suppliersOf(s), log_remind: remindSettings(s) };
 });
 
 route('PUT', '/api/settings', async ({ db, env, body }) => {
@@ -1795,6 +1946,12 @@ route('PUT', '/api/settings', async ({ db, env, body }) => {
   if ('mottos' in body) set.push(['mottos', JSON.stringify((body.mottos || []).map((m) => String(m).trim()).filter(Boolean).slice(0, 3))]);
   if ('tpl_attendance' in body) set.push(['tpl_attendance', need(body.tpl_attendance, '출결 문자 문구')]);
   if ('tpl_feedback' in body) set.push(['tpl_feedback', need(body.tpl_feedback, '피드백 문자 문구')]);
+  if ('log_remind' in body) {
+    const r = body.log_remind || {};
+    const after = Math.max(0, Math.min(600, Math.trunc(Number(r.after_min) || 0)));
+    set.push(['log_remind', JSON.stringify({ on: !!r.on, after_min: after, sms: !!r.sms })]);
+  }
+  if ('tpl_log_remind' in body) set.push(['tpl_log_remind', need(body.tpl_log_remind, '일지 알림 문구')]);
   if ('discount_items' in body) {
     const items = (body.discount_items || [])
       .map((x, i) => ({ id: clean(x.id) || `d${Date.now().toString(36)}${i}`, name: clean(x.name), amount: money(x.amount) }))
@@ -1823,6 +1980,9 @@ route('PUT', '/api/settings', async ({ db, env, body }) => {
 // ───────── 요청 처리 ─────────
 
 export default {
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runLogReminders(env).catch((e) => console.error('일지 알림 오류', e)));
+  },
   async fetch(request, env) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith('/api/')) {

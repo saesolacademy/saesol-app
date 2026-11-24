@@ -319,3 +319,21 @@ table.match select, table.match input[type=month], table.match input[type=text] 
 .bk-big { position: relative; cursor: pointer; }
 .bk-big .cam { position: absolute; right: -6px; bottom: -6px; background: #fff; border-radius: 50%; width: 30px; height: 30px; display: grid; place-items: center; box-shadow: var(--shadow); }
 .discounts .days label.on { background: var(--lime-soft); border-color: var(--lime-2); }
+
+/* ───── 수업 일지 확장 ───── */
+.seg.sm button { padding: 4px 10px; font-size: 13.5px; }
+.seg button.on[data-v='○'], .seg button.on[data-v='상'] { background: var(--lime); color: var(--ink); font-weight: 700; }
+.seg button.on[data-v='△'], .seg button.on[data-v='중'] { background: var(--orange); color: #fff; }
+.seg button.on[data-v='×'], .seg button.on[data-v='하'] { background: var(--red); color: #fff; }
+.logtable td { vertical-align: middle; }
+.red-t { color: var(--red); }
+.days label.on { background: var(--lime-soft); border-color: var(--lime-2); }
+.bar { height: 10px; background: #eef2e6; border-radius: 99px; overflow: hidden; }
+.bar > div { height: 100%; background: var(--lime); border-radius: 99px; }
+.banner.warn { background: var(--red-bg); border: 1px solid #f2cbc6; color: #8a2e28; flex-wrap: wrap; }
+.banner.warn a { color: #8a2e28; }
+.space-l { margin-left: auto; }
+.logcard { padding: 12px 16px; }
+.grid > .card + .card, .mt > .card + .card.logcard { margin-top: 8px; }
+.logcard.miss { background: var(--red-bg); border-color: #f2cbc6; }
+.missbox { border-color: #f2cbc6; }
