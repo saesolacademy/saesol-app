@@ -1335,12 +1335,12 @@
           <thead><tr><th></th><th>이름</th><th>학교·학년</th>${view.birth ? '<th>생년월일</th>' : ''}<th>수강</th>${view.parents ? '<th>어머니 / 아버지</th>' : ''}${showT ? `<th>${Number(month.slice(5))}월 교육비</th>` : ''}${showB ? '<th>교재비</th>' : ''}<th>상태</th></tr></thead>
           <tbody>${list.map((s) => `<tr class="click" data-id="${s.id}">
             <td style="width:44px">${sAvatar(s, 34)}</td>
-            <td><b>${h(s.name)}</b>${s.sibling_count ? ` <span class="chip gold" title="형제·자매가 함께 다녀요">형제 ${s.sibling_count}</span>` : ''}</td>
-            <td>${h(s.school || '')} ${h(s.grade || '')}</td>
-            ${view.birth ? `<td class="small">${h(s.birth_date || '')}</td>` : ''}
-            <td class="small">${h(s.courses || '-')}</td>
-            ${view.parents ? `<td class="small">${h(fmtPhone(s.mother_phone)) || '-'}<br>${h(fmtPhone(s.father_phone)) || '-'}</td>` : ''}
-            ${showT ? `<td>${tChip(s.tuition)}</td>` : ''}
+            <td style="white-space:nowrap"><b>${h(s.name)}</b>${s.sibling_count ? ` <span class="chip gold" title="형제·자매가 함께 다녀요">형제 ${s.sibling_count}</span>` : ''}</td>
+            <td style="white-space:nowrap">${h(s.school || '')} ${h(s.grade || '')}</td>
+            ${view.birth ? `<td class="small" style="white-space:nowrap">${h(s.birth_date || '')}</td>` : ''}
+            <td class="small" style="min-width:180px">${h(s.courses || '-')}</td>
+            ${view.parents ? `<td class="small" style="white-space:nowrap">${h(fmtPhone(s.mother_phone)) || '-'}<br>${h(fmtPhone(s.father_phone)) || '-'}</td>` : ''}
+            ${showT ? `<td style="white-space:nowrap">${tChip(s.tuition)}</td>` : ''}
             ${showB ? `<td>${s.book_due ? `<span class="chip red">${won(s.book_due)} 미납</span>` : s.book_total ? '<span class="chip green">정산</span>' : '<span class="muted small">-</span>'}</td>` : ''}
             <td>${statusChip(s.status)}${s.has_phone ? '' : ' <span class="chip red">번호 없음</span>'}</td></tr>`).join('')}</tbody>
         </table></div>
