@@ -1587,6 +1587,79 @@ route('PUT', '/api/courses/:id/units', async ({ db, user, body, params }) => {
   if (stmts.length) await db.batch(stmts);
   return { ok: true, count: list.length };
 });
+// 진도표 엑셀로 한꺼번에 올리기: rows = [{course, book, title, planned_date}]
+// mode: 'add'(뒤에 이어 붙이기, 같은 단원은 건너뛰기) | 'replace'(아직 안 나간 단원을 새 것으로 바꾸기, 나간 단원 기록은 지킴)
+function unitDate(v) {
+  const s = String(v ?? '').trim();
+  if (!s) return null;
+  let m = s.match(/^(\d{4})[-./년\s]+(\d{1,2})[-./월\s]+(\d{1,2})/);
+  if (m) {
+    const z = (n) => String(n).padStart(2, '0');
+    const d = `${m[1]}-${z(m[2])}-${z(m[3])}`;
+    return isDate(d) && Number(m[2]) <= 12 && Number(m[3]) <= 31 ? d : null;
+  }
+  return null;
+}
+const normName = (s) => String(s ?? '').replace(/\s+/g, '').toLowerCase();
+route('POST', '/api/units/import', async ({ db, user, body }) => {
+  const rows = Array.isArray(body.rows) ? body.rows.slice(0, 3000) : [];
+  const mode = body.mode === 'replace' ? 'replace' : 'add';
+  const defaultId = Number(body.default_course_id) || null;
+  const where = seesAll(user) ? '' : 'AND teacher_id = ?';
+  const courses = await q.all(db, `SELECT id, name, subject FROM courses WHERE active = 1 ${where} ORDER BY subject, name`, ...(seesAll(user) ? [] : [user.id]));
+  const byName = new Map(courses.map((c) => [normName(c.name), c]));
+  const byId = new Map(courses.map((c) => [c.id, c]));
+  if (defaultId && !byId.has(defaultId)) fail(403, '담당 반이 아니에요');
+  const groups = new Map();
+  const unknown = new Map();
+  let noTitle = 0, badDate = 0;
+  for (const r of rows) {
+    const title = clean(r.title);
+    const cname = clean(r.course);
+    if (!title) { if (cname || clean(r.book)) noTitle++; continue; }
+    const c = cname ? byName.get(normName(cname)) : byId.get(defaultId);
+    if (!c) { const k = cname || '(반 이름 없음)'; unknown.set(k, (unknown.get(k) || 0) + 1); continue; }
+    const pd = unitDate(r.planned_date);
+    if (clean(r.planned_date) && !pd) badDate++;
+    if (!groups.has(c.id)) groups.set(c.id, { course: c, list: [] });
+    groups.get(c.id).list.push({ book: clean(r.book), title: title.slice(0, 200), planned_date: pd });
+  }
+  const result = [];
+  const stmts = [];
+  for (const { course, list } of groups.values()) {
+    const existing = await q.all(db, 'SELECT id, seq, book, title, done_date FROM course_units WHERE course_id = ? ORDER BY seq, id', course.id);
+    const kept = mode === 'replace' ? existing.filter((u) => u.done_date) : existing;
+    const seen = new Set(kept.map((u) => `${u.book || ''}|${u.title}`));
+    const add = [];
+    let dup = 0;
+    for (const u of list) {
+      const k = `${u.book || ''}|${u.title}`;
+      if (seen.has(k)) { dup++; continue; }
+      seen.add(k);
+      add.push(u);
+    }
+    if (kept.length + add.length > 300) fail(400, `${course.name}: 단원은 반마다 300개까지 넣을 수 있어요`);
+    const removed = mode === 'replace' ? existing.length - kept.length : 0;
+    result.push({ course_id: course.id, name: course.name, subject: course.subject, before: existing.length, add: add.length, dup, removed, sample: add.slice(0, 5) });
+    if (!body.preview) {
+      if (mode === 'replace') stmts.push(db.prepare('DELETE FROM course_units WHERE course_id = ? AND done_date IS NULL').bind(course.id));
+      let seq = kept.reduce((m, u) => Math.max(m, u.seq || 0), 0);
+      for (const u of add) stmts.push(db.prepare('INSERT INTO course_units (course_id, seq, book, title, planned_date) VALUES (?, ?, ?, ?, ?)').bind(course.id, ++seq, u.book, u.title, u.planned_date));
+    }
+  }
+  if (!body.preview && stmts.length) {
+    for (let i = 0; i < stmts.length; i += 90) await db.batch(stmts.slice(i, i + 90));
+  }
+  return {
+    ok: true, preview: !!body.preview, mode,
+    courses: result,
+    unknown: [...unknown].map(([name, count]) => ({ name, count })),
+    no_title: noTitle, bad_date: badDate,
+    total: result.reduce((s, c) => s + c.add, 0),
+    my_courses: courses.map((c) => c.name),
+  };
+});
+
 // 일지 기타 항목: [{name, options: [..]}] (선택지가 없으면 글로 적는 칸)
 function parseFields(raw) {
   try { const a = typeof raw === 'string' ? JSON.parse(raw) : raw; return Array.isArray(a) ? a : []; } catch { return []; }

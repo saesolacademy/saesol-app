@@ -739,7 +739,8 @@
     if (parts[0]) return pageProgressCourse(el, Number(parts[0]));
     const { courses } = await api('GET', '/api/progress');
     el.innerHTML = `
-      <div class="page-head"><div><h1>진도표</h1><p>반마다 단원 계획을 넣어 두면, 수업 일지에서 체크한 단원으로 진도율이 자동 계산돼요.${isOwner() || isManager() ? '' : ' 내 반만 보여요.'}</p></div></div>
+      <div class="page-head"><div><h1>진도표</h1><p>반마다 단원 계획을 넣어 두면, 수업 일지에서 체크한 단원으로 진도율이 자동 계산돼요.${isOwner() || isManager() ? '' : ' 내 반만 보여요.'}</p></div>
+        <button class="btn primary" id="uImport">📂 엑셀로 한꺼번에 올리기</button></div>
       <div class="card"><div class="table-wrap"><table class="list">
         <thead><tr><th>반</th><th>담당</th><th style="width:34%">진도</th><th>다음 단원</th><th>최근 일지</th><th></th></tr></thead>
         <tbody>${courses.map((c) => {
@@ -749,6 +750,103 @@
             <td class="small">${h(c.next_unit || (c.total ? '모두 완료 🎉' : '-'))}</td><td class="small">${c.last_log ? prettyDate(c.last_log) : '-'}</td>
             <td style="text-align:right"><a class="btn sm" href="#/progress/${c.id}">${c.total ? '보기' : '만들기'}</a></td></tr>`;
         }).join('') || '<tr><td colspan="6" class="empty">반이 없어요</td></tr>'}</tbody></table></div></div>`;
+    $('#uImport').onclick = () => unitsImportModal(null, reload);
+  }
+  // 진도표 엑셀 → [{course, book, title, planned_date}]
+  function unitRowsFromGrid(grid, hasDefault) {
+    const norm = (c) => String(c ?? '').replace(/\s/g, '');
+    const hi = grid.findIndex((r) => r.some((c) => /^(단원|단원명|차시|진도|진도내용|수업내용|내용)$/.test(norm(c))));
+    let col;
+    if (hi >= 0) {
+      const head = grid[hi].map(norm);
+      const find = (re) => head.findIndex((x) => re.test(x));
+      col = { course: find(/^(반|반이름|반명|수업|수업명|클래스)$/), book: find(/교재|책/), title: find(/^(단원|단원명|차시|진도|진도내용|수업내용|내용)$/), date: find(/예정|날짜|일자|수업일|계획/) };
+    } else {
+      col = hasDefault ? { course: -1, book: 0, title: 1, date: 2 } : { course: 0, book: 1, title: 2, date: 3 };
+    }
+    const out = [];
+    let lastCourse = '', lastBook = '';
+    for (const r of grid.slice(hi + 1)) {
+      const get = (k) => (col[k] >= 0 ? String(r[col[k]] ?? '').replace(/[\t\r\n]+/g, ' ').trim() : '');
+      const course = get('course') || lastCourse; // 엑셀에서 칸을 합쳐 둔 경우 위 칸을 이어 써요
+      const book = get('book') || (get('course') && get('course') !== lastCourse ? '' : lastBook);
+      const title = get('title');
+      if (!title && !get('course') && !get('book')) continue;
+      lastCourse = course; lastBook = book;
+      const dv = get('date');
+      out.push({ course, book, title, planned_date: /^\d+(\.\d+)?$/.test(dv) ? excelDate(dv).slice(0, 10) : dv });
+    }
+    return { rows: out, hasHeader: hi >= 0, hasCourseCol: col.course >= 0 };
+  }
+  function unitsImportModal(defaultCourse, done) {
+    let parsed = null, checkedKey = null;
+    modal({
+      title: defaultCourse ? `${defaultCourse.name} 진도표 엑셀로 올리기` : '진도표 엑셀로 한꺼번에 올리기',
+      wide: true,
+      submitText: '미리 보기',
+      body: `
+        <div class="howto">
+          <b>엑셀 첫 줄에 제목</b>을 넣어 주세요: <b>반 · 교재 · 단원 · 예정일</b> (예정일은 없어도 돼요)
+          <div class="small muted" style="margin-top:6px">
+            ${defaultCourse ? '이 반 것만 올릴 땐 <b>반</b> 칸은 비워 두거나 빼도 돼요.<br>' : '여러 반을 한 파일에 같이 넣어도 돼요. <b>반 이름은 [반 관리]에 적힌 이름과 똑같이</b> 써 주세요(띄어쓰기는 달라도 괜찮아요).<br>'}
+            반·교재 칸이 비어 있으면 <b>바로 위 줄과 같은 것</b>으로 알아들어요. 예정일은 2026-12-01, 2026.12.1 모두 돼요.
+          </div>
+          <div class="row" style="margin-top:8px"><label class="btn sm primary" style="cursor:pointer">📂 엑셀 파일 고르기<input type="file" id="uFile" accept=".xlsx,.csv" hidden></label>
+            <a class="btn sm" href="/units-template.csv" download="진도표양식.csv">⬇ 진도표 양식 내려받기</a><span class="small muted" id="uFileName"></span></div>
+          <details style="margin-top:8px"><summary class="small">파일 대신 엑셀에서 복사해 붙여 넣기</summary>
+            <textarea id="uPaste" style="min-height:120px;margin-top:6px" placeholder="반	교재	단원	예정일&#10;중2A	개념원리 중2-1	1단원 유리수와 순환소수	2026-12-01"></textarea></details>
+        </div>
+        <div class="field mt"><span class="small muted">이미 단원이 들어 있는 반은</span>
+          <div class="seg" style="margin-top:4px">
+            <label><input type="radio" name="mode" value="add" checked> 뒤에 이어 붙이기</label>
+            <label><input type="radio" name="mode" value="replace"> 안 나간 단원은 지우고 새로 넣기</label>
+          </div>
+          <div class="small muted">이미 수업 일지에서 나간 단원 기록은 어느 쪽이든 그대로 남아요. 똑같은 단원은 두 번 들어가지 않아요.</div></div>
+        <div id="uPreview"></div>`,
+      onOpen: (f) => {
+        const reset = () => { checkedKey = null; $('button[type=submit]', f).textContent = '미리 보기'; $('#uPreview', f).innerHTML = ''; };
+        const take = (grid, name) => { parsed = unitRowsFromGrid(grid, !!defaultCourse); $('#uFileName', f).textContent = name || ''; reset(); f.requestSubmit(); };
+        $('#uFile', f).onchange = async (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          try {
+            const grid = /\.csv$/i.test(file.name) ? (await file.text()).replace(/^﻿/, '').split(/\r?\n/).map((l) => l.split(',')) : await readXlsx(file);
+            take(grid, file.name);
+          } catch (err) { $('.err', f).textContent = err.message; }
+          e.target.value = '';
+        };
+        $('#uPaste', f).oninput = (e) => { const t = e.target.value; parsed = t.trim() ? unitRowsFromGrid(t.split(/\r?\n/).map((l) => l.split('\t')), !!defaultCourse) : null; $('#uFileName', f).textContent = ''; reset(); };
+        $$('input[name=mode]', f).forEach((r) => (r.onchange = () => { if (parsed) { reset(); f.requestSubmit(); } }));
+      },
+      onSubmit: async (d, f) => {
+        if (!parsed || !parsed.rows.length) throw new Error('먼저 엑셀 파일을 골라 주세요. (단원이 한 줄도 없어요)');
+        const payload = { rows: parsed.rows, mode: d.mode, default_course_id: defaultCourse ? defaultCourse.id : null };
+        const key = JSON.stringify(payload);
+        if (checkedKey !== key) {
+          const p = await api('POST', '/api/units/import', { ...payload, preview: true });
+          $('#uPreview', f).innerHTML = `
+            <div class="mt"><b>미리 보기</b> — 새로 들어갈 단원 <b>${p.total}개</b>${parsed.hasHeader ? '' : ` · <span style="color:var(--orange)">제목 줄이 없어서 "${defaultCourse ? '교재, 단원, 예정일' : '반, 교재, 단원, 예정일'}" 순서로 읽었어요</span>`}</div>
+            ${p.courses.length ? `<div class="table-wrap" style="margin-top:6px"><table class="list"><thead><tr><th>반</th><th>지금</th><th>새로 넣기</th><th>건너뜀(같은 단원)</th>${p.mode === 'replace' ? '<th>지울 단원</th>' : ''}<th>앞부분 보기</th></tr></thead><tbody>
+              ${p.courses.map((c) => `<tr><td><span class="chip">${h(c.subject)}</span> <b>${h(c.name)}</b></td><td>${c.before}개</td><td><b>${c.add}개</b></td><td>${c.dup || '-'}</td>${p.mode === 'replace' ? `<td>${c.removed ? `<span class="red-t">${c.removed}개</span>` : '-'}</td>` : ''}
+                <td class="small">${c.sample.map((u) => `${u.book ? `<span class="muted">${h(u.book)} ·</span> ` : ''}${h(u.title)}${u.planned_date ? ` <span class="muted">(${h(u.planned_date)})</span>` : ''}`).join('<br>')}${c.add > c.sample.length ? '<br><span class="muted">…</span>' : ''}</td></tr>`).join('')}
+            </tbody></table></div>` : ''}
+            ${p.unknown.length ? `<div class="small" style="color:var(--orange);margin-top:6px">⚠ 못 찾은 반 (이 줄들은 빠져요): ${p.unknown.map((u) => `<b>${h(u.name)}</b> ${u.count}줄`).join(', ')}<br>
+              <span class="muted">[반 관리]의 반 이름: ${p.my_courses.map(h).join(', ') || '없음'}</span></div>` : ''}
+            ${p.no_title ? `<div class="small" style="color:var(--orange)">단원 칸이 비어 있는 줄 ${p.no_title}개는 빠져요.</div>` : ''}
+            ${p.bad_date ? `<div class="small" style="color:var(--orange)">예정일을 알아보지 못한 줄 ${p.bad_date}개는 예정일 없이 들어가요.</div>` : ''}
+            <div class="small muted" style="margin-top:6px">맞으면 아래 <b>이대로 넣기</b>를 눌러 주세요.</div>`;
+          checkedKey = key;
+          const btn = $('button[type=submit]', f);
+          btn.textContent = `이대로 ${p.total}개 넣기`;
+          btn.disabled = false;
+          if (!p.total && !(p.mode === 'replace' && p.courses.some((c) => c.removed))) { setTimeout(() => (btn.disabled = true)); }
+          return true;
+        }
+        const r = await api('POST', '/api/units/import', payload);
+        toast(`${r.courses.length}개 반에 단원 ${r.total}개를 넣었어요`);
+        done && done();
+      },
+    });
   }
   async function pageProgressCourse(el, id) {
     const { course, units } = await api('GET', `/api/courses/${id}/units`);
@@ -756,13 +854,14 @@
     el.innerHTML = `
       <div><a href="#/progress" class="small muted">← 진도표</a></div>
       <div class="page-head mt"><div><h1>${h(course.name)} 진도표</h1><p>${units.length ? `진도율 ${Math.round((done / units.length) * 100)}% · ${done}/${units.length}단원` : '아직 단원이 없어요. [진도표 고치기]로 넣어 주세요.'}</p></div>
-        <button class="btn primary" id="eu">교재·단원 고치기</button></div>
+        <div class="row"><button class="btn" id="uImport">📂 엑셀로 올리기</button><button class="btn primary" id="eu">교재·단원 고치기</button></div></div>
       ${units.length ? `<div class="card"><table class="list"><thead><tr><th>#</th><th>교재</th><th>단원</th><th>예정일</th><th>나간 날</th><th></th></tr></thead><tbody>${units.map((u, i) => `
         <tr><td class="muted">${i + 1}</td><td class="small">${h(u.book || '-')}</td><td><b>${h(u.title)}</b></td>
         <td class="${u.planned_date && !u.done_date && u.planned_date < now ? 'red-t' : ''}">${h(u.planned_date || '-')}</td>
         <td>${u.done_date ? `<span class="chip green">✓ ${h(u.done_date)}</span>` : '<span class="muted small">아직</span>'}</td>
         <td style="text-align:right"><button class="btn sm" data-tg="${u.id}" data-done="${u.done_date ? 0 : 1}">${u.done_date ? '완료 취소' : '완료로 표시'}</button></td></tr>`).join('')}</tbody></table></div>` : ''}`;
     $('#eu').onclick = () => unitsModal(id, reload);
+    $('#uImport').onclick = () => unitsImportModal(course, reload);
     $$('[data-tg]', el).forEach((b) => (b.onclick = async () => { await api('PATCH', `/api/units/${b.dataset.tg}`, { done: b.dataset.done === '1' }); reload(); }));
   }
 
