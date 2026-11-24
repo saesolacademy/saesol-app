@@ -4,6 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>학원 관리</title>
+  <meta name="theme-color" content="#8dc63f" />
+  <link rel="manifest" href="/app.webmanifest" />
+  <link rel="icon" href="/icons/app-192.png" />
+  <link rel="apple-touch-icon" href="/icons/app-180.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="새솔학원" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
   <link rel="stylesheet" href="/style.css" />
 </head>
@@ -11,5 +17,6 @@
   <div id="app"><div class="boot">불러오는 중…</div></div>
   <div id="toast"></div>
   <script src="/app.js"></script>
+  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});</script>
 </body>
 </html>

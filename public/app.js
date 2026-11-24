@@ -195,8 +195,8 @@
     }
     app.innerHTML = `
       <div class="auth"><form class="card" id="f">
-        <h1>${h(status.academy_name)}</h1>
-        <p>원장님·선생님 로그인</p>
+        <h1>${h(status.academy_name)}${SCORE ? ' 채점' : ''}</h1>
+        <p>${SCORE ? '단어시험 채점 · 선생님 로그인' : '원장님·선생님 로그인'}</p>
         <label class="field"><span>아이디</span><input type="text" name="login_id" required autocapitalize="off" autocomplete="username"></label>
         <label class="field"><span>비밀번호</span><input type="password" name="password" required autocomplete="current-password"></label>
         <div class="err"></div>
@@ -221,7 +221,20 @@
     { group: '기본 정보', items: [['students', '🎒', '학생 명부'], ['books', '📚', '교재 관리'], ['courses', '🗂️', '반 학생 넣기', 'manager']] },
   ];
 
+  // 채점 전용 앱(/score): 메뉴 없이 채점 화면만
+  const SCORE = window.APP_MODE === 'score';
+  function renderScoreShell() {
+    const me = state.me;
+    $('#app').innerHTML = `
+      <div class="score-shell" id="shell">
+        <div class="score-top"><div class="brand-mark">채</div><div style="flex:1"><b>${h(state.academy)} 채점</b><div class="small">${h(me.name)} ${roleLabel(me)}</div></div>
+          <button class="btn sm" id="logout">로그아웃</button></div>
+        <main class="main" id="main"></main>
+      </div>`;
+    $('#logout').onclick = async () => { await api('POST', '/api/logout').catch(() => {}); state.me = null; location.hash = '#/'; showLogin(); };
+  }
   function renderShell() {
+    if (SCORE) return renderScoreShell();
     const me = state.me;
     $('#app').innerHTML = `
       <div class="shell" id="shell">
@@ -263,9 +276,9 @@
   async function router() {
     if (!state.me) return;
     const { parts, query } = parseHash();
-    const key = parts[0] || '';
+    const key = SCORE ? 'word' : parts[0] || '';
     $$('[data-nav]').forEach((a) => a.classList.toggle('on', a.dataset.nav === key));
-    $('#shell').classList.remove('menu-open');
+    if (!SCORE) $('#shell').classList.remove('menu-open');
     const main = $('#main');
     const page = PAGES[key];
     if (!page || (page.owner && !isOwner()) || (page.allow && !page.allow())) {
@@ -2315,7 +2328,7 @@
       if (me.user.role === 'student') throw new Error('학생 계정');
       state.me = me.user;
       state.academy = st.academy_name || '학원';
-      document.title = state.academy;
+      document.title = SCORE ? `${state.academy} 채점` : state.academy;
       renderShell();
       router();
     } catch {

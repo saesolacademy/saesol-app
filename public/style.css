@@ -363,3 +363,9 @@ table.match select, table.match input[type=month], table.match input[type=text] 
 @media (max-width: 760px) { .modal.wide { max-width: 100%; } .scorebox .big { font-size: 40px; } }
 
 @media (max-width: 760px) { .g3f { grid-template-columns: 1fr; } }
+
+/* ───── 채점 전용 앱 ───── */
+.score-shell .score-top { display: flex; align-items: center; gap: 10px; background: var(--lime); color: var(--ink); padding: 10px 14px; position: sticky; top: 0; z-index: 30; padding-top: max(10px, env(safe-area-inset-top)); }
+.score-shell .score-top .brand-mark { background: #fff; }
+.score-shell .score-top .small { font-size: 12px; opacity: .8; }
+.score-shell .main { max-width: 720px; margin: 0 auto; padding: 14px 14px 60px; }
