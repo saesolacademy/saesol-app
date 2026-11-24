@@ -337,3 +337,11 @@ table.match select, table.match input[type=month], table.match input[type=text] 
 .grid > .card + .card, .mt > .card + .card.logcard { margin-top: 8px; }
 .logcard.miss { background: var(--red-bg); border-color: #f2cbc6; }
 .missbox { border-color: #f2cbc6; }
+
+/* ───── 클릭으로 고르는 칩 ───── */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.mt-s { margin-top: 6px; }
+.pick { border: 1px solid var(--line); background: #fff; border-radius: 99px; padding: 6px 12px; cursor: pointer; font-size: 14px; display: inline-flex; gap: 4px; align-items: center; user-select: none; }
+.pick:hover { border-color: var(--lime-2); }
+.pick.on { background: var(--lime); border-color: var(--lime-2); color: var(--ink); font-weight: 700; }
+.bkblock { padding: 12px; margin-bottom: 10px; background: #fbfdf7; }

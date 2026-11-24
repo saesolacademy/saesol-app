@@ -61,6 +61,7 @@ export const SCHEMA = [
     end_time TEXT,
     room TEXT,
     fee INTEGER,
+    log_fields TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
@@ -145,6 +146,8 @@ export const SCHEMA = [
     teacher_id INTEGER,
     content TEXT,
     homework TEXT,
+    books TEXT,
+    extras TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (course_id, date)
@@ -214,6 +217,7 @@ export const SCHEMA = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     course_id INTEGER NOT NULL,
     seq INTEGER NOT NULL DEFAULT 0,
+    book TEXT,
     title TEXT NOT NULL,
     planned_date TEXT,
     done_date TEXT,
@@ -336,6 +340,10 @@ const MIGRATIONS = [
   'ALTER TABLE bills ADD COLUMN kind TEXT',
   'ALTER TABLE class_log_notes ADD COLUMN hw TEXT',
   'ALTER TABLE class_log_notes ADD COLUMN achieve TEXT',
+  'ALTER TABLE course_units ADD COLUMN book TEXT',
+  'ALTER TABLE courses ADD COLUMN log_fields TEXT',
+  'ALTER TABLE class_logs ADD COLUMN books TEXT',
+  'ALTER TABLE class_logs ADD COLUMN extras TEXT',
   'ALTER TABLE enrollments ADD COLUMN fee INTEGER',
   'ALTER TABLE consultations ADD COLUMN subject TEXT',
 ];
