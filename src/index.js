@@ -683,6 +683,25 @@ route('DELETE', '/api/students/:id/photo', async ({ db, user, params }) => {
   await q.run(db, 'UPDATE students SET photo = NULL, photo_v = NULL WHERE id = ?', id);
   return { ok: true };
 });
+// 학생 기록 완전히 삭제 (원장만). 되돌릴 수 없어요.
+// 교재 재고 숫자가 틀어지지 않도록 교재 배부 기록은 이름 없이(학생 0번) 남겨요.
+route('DELETE', '/api/students/:id', async ({ db, params, body }) => {
+  const id = Number(params.id);
+  const s = await q.first(db, 'SELECT id, name FROM students WHERE id = ?', id);
+  if (!s) fail(404, '학생을 찾을 수 없어요');
+  if (String((body && body.confirm_name) || '').replace(/\s/g, '') !== String(s.name).replace(/\s/g, '')) fail(400, '확인용 이름이 학생 이름과 달라요');
+  const del = (table) => db.prepare(`DELETE FROM ${table} WHERE student_id = ?`).bind(id);
+  const stmts = [
+    db.prepare('DELETE FROM class_log_notes WHERE student_id = ?').bind(id),
+    ...['enrollments', 'attendance', 'feedbacks', 'messages', 'consultations', 'risk_flags', 'student_discounts', 'student_subjects', 'bills', 'word_tests', 'payments'].map(del),
+    db.prepare('UPDATE book_deliveries SET student_id = 0, memo = NULL WHERE student_id = ?').bind(id),
+    db.prepare('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE student_id = ?)').bind(id),
+    db.prepare('DELETE FROM users WHERE student_id = ? AND role = ?').bind(id, 'student'),
+    db.prepare('DELETE FROM students WHERE id = ?').bind(id),
+  ];
+  await db.batch(stmts);
+  return { ok: true };
+}, OWNER);
 route('GET', '/api/student-photos/:id', async ({ db, user, params }) => {
   const id = Number(params.id);
   if (!(await canSeeStudent(db, user, id))) {

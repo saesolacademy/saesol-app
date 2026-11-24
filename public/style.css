@@ -327,6 +327,7 @@ table.match select, table.match input[type=month], table.match input[type=text] 
 .seg button.on[data-v='×'], .seg button.on[data-v='하'] { background: var(--red); color: #fff; }
 .logtable td { vertical-align: middle; }
 .red-t { color: var(--red); }
+.green-t { color: #3f7d12; }
 .days label.on { background: var(--lime-soft); border-color: var(--lime-2); }
 .bar { height: 10px; background: #eef2e6; border-radius: 99px; overflow: hidden; }
 .bar > div { height: 100%; background: var(--lime); border-radius: 99px; }

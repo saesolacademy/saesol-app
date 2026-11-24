@@ -1640,7 +1640,15 @@
     $$('[data-delbook]', el).forEach((b) => (b.onclick = async () => { if (!confirm('이 교재 배부 기록을 지울까요?')) return; try { await api('DELETE', `/api/deliveries/${b.dataset.delbook}`); reload(); } catch (e) { toast(e.message); } }));
     if (!edit) return;
 
-    $('#edit').onclick = () => modal({ title: '인적사항 고치기', wide: true, body: studentForm(s), onSubmit: async (f) => { await api('PATCH', `/api/students/${id}`, f); toast('저장했어요'); reload(); } });
+    $('#edit').onclick = () => modal({
+      title: '인적사항 고치기', wide: true, body: studentForm(s),
+      foot: isOwner() ? '<button type="button" class="btn danger" id="stuDel">🗑 학생 기록 삭제</button>' : '',
+      onOpen: (f, closeEdit) => {
+        if (!isOwner()) return;
+        $('#stuDel', f).onclick = () => { closeEdit(); deleteStudentModal(s); };
+      },
+      onSubmit: async (f) => { await api('PATCH', `/api/students/${id}`, f); toast('저장했어요'); reload(); },
+    });
     $$('[data-fee]', el).forEach((b) => (b.onclick = () => {
       const c = d.courses.find((x) => x.id === Number(b.dataset.fee));
       modal({
@@ -1692,7 +1700,7 @@
           <td class="small">${h(scheduleText(c))}</td>
           ${own ? `<td>${c.fee != null ? Number(c.fee).toLocaleString('ko-KR') + '원' : '-'}</td>` : ''}
           <td>${c.student_count}명</td>
-          <td style="text-align:right;white-space:nowrap"><button class="btn sm" data-setup="${c.id}">📚 교재·일지</button> <button class="btn sm" data-stu="${c.id}">학생 넣기</button>${own ? ` <button class="btn sm" data-edit="${c.id}">고치기</button>` : ''}</td></tr>`).join('')}</tbody>
+          <td style="text-align:right;white-space:nowrap"><button class="btn sm" data-setup="${c.id}">📚 교재·일지</button> <button class="btn sm" data-stu="${c.id}">학생 넣기·빼기</button>${own ? ` <button class="btn sm" data-edit="${c.id}">고치기</button>` : ''}</td></tr>`).join('')}</tbody>
       </table></div>${courses.length ? '' : '<div class="empty">아직 반이 없어요</div>'}</div>`;
     const byId = new Map(courses.map((c) => [c.id, c]));
     const form = (c = {}) => {
@@ -1743,26 +1751,72 @@
     $$('[data-stu]', el).forEach((b) => (b.onclick = async () => {
       const c = byId.get(Number(b.dataset.stu));
       const [{ students }, cur] = await Promise.all([api('GET', '/api/students?status=재원'), api('GET', `/api/courses/${c.id}`)]);
-      const inSet = new Set(cur.students.map((s) => s.id));
+      const info = new Map(students.map((s) => [s.id, s]));
+      cur.students.forEach((s) => { if (!info.has(s.id)) info.set(s.id, s); }); // 휴원·퇴원생도 이 반에 있으면 빼기에 보여요
+      const orig = new Set(cur.students.map((s) => s.id));
+      const sel = new Set(orig);
+      const line = (s) => `<b>${h(s.name)}</b> <span class="muted small">${h(s.school || '')} ${h(s.grade || '')}${s.status && s.status !== '재원' ? ` · ${h(s.status)}` : ''}</span>`;
       modal({
-        title: `${c.name} 학생 넣기`, wide: true,
-        body: `<input type="search" id="find" placeholder="이름·학교로 찾기" style="margin-bottom:8px">
-          <div class="checklist">${students.map((s) => `<label data-txt="${h((s.name + ' ' + (s.school || '') + ' ' + (s.grade || '')).toLowerCase())}"><input type="checkbox" name="s_${s.id}" ${inSet.has(s.id) ? 'checked' : ''}> <b>${h(s.name)}</b> <span class="muted small">${h(s.school || '')} ${h(s.grade || '')}</span></label>`).join('') || '<div class="empty">재원생이 없어요. 먼저 학생 명단에서 등록해 주세요.</div>'}</div>
-          <div class="small muted" style="margin-top:6px" id="cnt"></div>`,
+        title: `${c.name} 학생 넣기·빼기`, wide: true, submitText: '저장',
+        body: `
+          <div class="row"><b>이 반 학생</b> <span class="small muted" id="cnt"></span></div>
+          <div class="small muted">잘못 넣은 학생은 오른쪽 <b>빼기</b>를 누르세요. 저장을 눌러야 반영돼요.</div>
+          <div class="checklist" id="inList" style="margin-top:6px;max-height:260px"></div>
+          <div class="row mt"><b>학생 넣기</b><span class="small muted">재원생 중에서 찾아서 <b>넣기</b>를 누르세요</span></div>
+          <input type="search" id="find" placeholder="이름·학교로 찾기" style="margin:6px 0">
+          <div class="checklist" id="outList" style="max-height:260px"></div>
+          <div class="small" style="margin-top:8px" id="chg"></div>`,
         onOpen: (f) => {
-          const upd = () => ($('#cnt', f).textContent = `${$$('.checklist input:checked', f).length}명 선택`);
-          upd();
-          $$('.checklist input', f).forEach((i) => (i.onchange = upd));
-          $('#find', f).oninput = (e) => { const t = e.target.value.trim().toLowerCase(); $$('.checklist label', f).forEach((l) => (l.style.display = !t || l.dataset.txt.includes(t) ? '' : 'none')); };
+          let q = '';
+          const draw = () => {
+            const inS = [...sel].map((id) => info.get(id)).filter(Boolean).sort((a, b2) => a.name.localeCompare(b2.name, 'ko'));
+            $('#inList', f).innerHTML = inS.map((s) => `<div class="row" style="padding:6px 2px;border-bottom:1px solid #f3f1ec"><span>${line(s)}${orig.has(s.id) ? '' : ' <span class="chip green">새로 넣음</span>'}</span><span class="space"></span><button type="button" class="btn sm danger" data-out="${s.id}">빼기</button></div>`).join('') || '<div class="empty">아직 학생이 없어요</div>';
+            const outS = students.filter((s) => !sel.has(s.id) && (!q || (s.name + ' ' + (s.school || '') + ' ' + (s.grade || '')).toLowerCase().includes(q)));
+            $('#outList', f).innerHTML = outS.map((s) => `<div class="row" style="padding:6px 2px;border-bottom:1px solid #f3f1ec"><span>${line(s)}${orig.has(s.id) ? ' <span class="chip red">뺄 예정</span>' : ''}</span><span class="space"></span><button type="button" class="btn sm primary" data-in="${s.id}">넣기</button></div>`).join('') || `<div class="empty">${q ? '찾는 학생이 없어요' : '넣을 수 있는 재원생이 없어요'}</div>`;
+            $('#cnt', f).textContent = `${sel.size}명`;
+            const added = [...sel].filter((id) => !orig.has(id)).length, removed = [...orig].filter((id) => !sel.has(id));
+            $('#chg', f).innerHTML = added || removed.length ? `바뀐 내용: ${added ? `<b class="green-t">${added}명 넣기</b>` : ''}${added && removed.length ? ' · ' : ''}${removed.length ? `<b class="red-t">${removed.map((id) => h(info.get(id).name)).join(', ')} 빼기</b>` : ''} — <b>저장</b>을 눌러 주세요` : '<span class="muted">아직 바뀐 게 없어요</span>';
+            $$('[data-out]', f).forEach((x) => (x.onclick = () => { sel.delete(Number(x.dataset.out)); draw(); }));
+            $$('[data-in]', f).forEach((x) => (x.onclick = () => { sel.add(Number(x.dataset.in)); draw(); }));
+          };
+          $('#find', f).oninput = (e) => { q = e.target.value.trim().toLowerCase(); draw(); };
+          draw();
         },
-        onSubmit: async (d) => {
-          const ids = Object.keys(d).filter((k) => k.startsWith('s_')).map((k) => Number(k.slice(2)));
-          await api('PUT', `/api/courses/${c.id}/students`, { student_ids: ids });
-          toast(`${ids.length}명으로 저장했어요`);
+        onSubmit: async () => {
+          const removed = [...orig].filter((id) => !sel.has(id));
+          if (removed.length && !confirm(`${removed.map((id) => info.get(id).name).join(', ')} 학생을 ${c.name}에서 뺄까요?\n(출결·수업 일지 기록은 지워지지 않아요)`)) return true;
+          const r = await api('PUT', `/api/courses/${c.id}/students`, { student_ids: [...sel] });
+          toast(`저장했어요 · ${r.added}명 넣고 ${removed.length}명 뺐어요 (모두 ${r.count}명)`);
           reload();
         },
       });
     }));
+  }
+
+  // 학생 기록 완전히 삭제 (원장만)
+  function deleteStudentModal(s) {
+    modal({
+      title: `${s.name} 학생 기록 삭제`,
+      submitText: '완전히 삭제하기',
+      body: `
+        <div class="howto" style="border-color:var(--red);background:#fff5f5">
+          <b class="red-t">⚠ 삭제하면 되돌릴 수 없어요.</b><br>
+          인적사항·사진, 반 배정, 출결, 수업 일지의 이 학생 기록, 상담, 피드백, 문자 기록, 단어시험, 할인, 청구서, 수납 기록이 <b>모두 지워져요.</b>
+          <div class="small muted" style="margin-top:6px">교재 재고 숫자가 틀어지지 않도록, 교재를 나눠 준 수량만 이름 없이 남아요.</div>
+        </div>
+        <div class="small" style="margin-top:10px">💡 그만둔 학생은 삭제 대신 <b>[인적사항 고치기]에서 상태를 "퇴원"</b>으로 바꾸면 기록이 남아서, 다시 올 때 이어서 쓸 수 있어요.<br>삭제는 <b>잘못 등록했거나 두 번 등록된 학생</b>에게만 써 주세요.</div>
+        <label class="field mt"><span>정말 지우려면 학생 이름 <b>${h(s.name)}</b>을(를) 똑같이 적어 주세요</span><input type="text" name="confirm_name" autocomplete="off" placeholder="${h(s.name)}"></label>`,
+      onOpen: (f) => {
+        const btn = $('button[type=submit]', f);
+        btn.classList.remove('primary'); btn.classList.add('danger'); btn.disabled = true;
+        $('input[name=confirm_name]', f).oninput = (e) => { btn.disabled = e.target.value.replace(/\s/g, '') !== String(s.name).replace(/\s/g, ''); };
+      },
+      onSubmit: async (d) => {
+        await api('DELETE', `/api/students/${s.id}`, { confirm_name: d.confirm_name });
+        toast(`${s.name} 학생 기록을 삭제했어요`);
+        location.hash = '#/students';
+      },
+    });
   }
 
   // ───────── 피드백 기간 (원장) ─────────
