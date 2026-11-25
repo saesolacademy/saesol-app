@@ -615,7 +615,7 @@
     const byStu = new Map();
     for (const t of d.tests) { if (!byStu.has(t.student_id)) byStu.set(t.student_id, []); byStu.get(t.student_id).push(t); }
     const pendingBy = new Map(d.pending.map((t) => [t.student_id, t]));
-    const chip = (t) => `<span class="wchip ${t.passed ? 'ok' : 'no'}" data-wt="${t.id}" title="${h(wLabel(t))}">${t.attempt > 1 ? '재 ' : ''}${t.score}/${t.total} ${t.passed ? '✓' : '✗'}${t.photo_v ? ' 📷' : ''}</span>`;
+    const chip = (t) => `<span class="wchip ${t.passed ? 'ok' : 'no'}" data-wt="${t.id}" title="${h(wLabel(t))}">${t.range ? `<b>${h(t.range.replace(/^Day\s*/, 'D'))}</b> ` : ''}${t.attempt > 1 ? '재 ' : ''}${t.score}/${t.total} ${t.passed ? '✓' : '✗'}${t.photo_v ? ' 📷' : ''}</span>`;
     const rangeOpts = () => {
       const fromUnits = d.units.filter((u) => u.book === st.book).map((u) => u.title);
       const wb = d.word_books.find((b) => b.name === st.book);
@@ -624,6 +624,8 @@
     };
     const draw = () => {
       const ro = rangeOpts();
+      // 범위는 Day 1개만. 예전 "Day 3~5" 같은 값은 첫 Day로 맞춰요
+      if (ro.length && !ro.includes(st.range)) { const m = (st.range || '').match(/^(.*?)~/); st.range = m && ro.includes(m[1]) ? m[1] : ro[0]; }
       box.innerHTML = `
         <div class="card mt">
           <div class="row"><h2 style="margin:0">${h(d.course.name)}</h2><span class="small muted">${prettyDate(date)}</span></div>
@@ -633,7 +635,7 @@
           <div class="field"><span>📝 시험 유형 · 통과 기준</span><div class="tabs">${Object.entries(kinds).map(([k, pct]) => `<button type="button" class="btn sm ${st.kind === k ? 'primary' : ''}" data-wkind="${k}">${k} <span class="small">(${pct}%)</span></button>`).join('')}</div></div>
           <div class="grid g3f mt">
             <label class="field"><span>교재</span><select id="wbook"><option value="">— 고르기 —</option>${books.map((b) => `<option ${st.book === b ? 'selected' : ''}>${h(b)}</option>`).join('')}<option value="__">직접 적기…</option></select></label>
-            <label class="field"><span>시험 범위</span>${ro.length ? `<div class="row" style="flex-wrap:nowrap"><select id="wfrom">${ro.map((x) => `<option>${h(x)}</option>`).join('')}</select><span class="muted">~</span><select id="wto"><option value="">(한 단원)</option>${ro.map((x) => `<option>${h(x)}</option>`).join('')}</select></div>` : `<input type="text" id="wrange" value="${h(st.range)}" placeholder="예: Day 1~2">`}</label>
+            <label class="field"><span>시험 범위 (Day 1개)</span>${ro.length ? `<select id="wfrom">${ro.map((x) => `<option ${x === st.range ? 'selected' : ''}>${h(x)}</option>`).join('')}</select>` : `<input type="text" id="wrange" value="${h(st.range)}" placeholder="예: Day 1">`}</label>
             <label class="field"><span>문항 수 · 통과 <b id="wpass">${Math.ceil((st.total * kinds[st.kind]) / 100)}</b>개 이상 (${kinds[st.kind]}%)</span><input type="number" id="wtotal" value="${st.total}" min="1" max="500" inputmode="numeric"></label>
           </div>
           <div class="small muted">학생 이름을 누르면 채점 화면이 열려요. ✗는 불통이에요. 결과 칸을 누르면 시험지를 볼 수 있어요.</div>
@@ -641,19 +643,21 @@
         ${d.pending.length ? `<div class="card mt missbox"><h2>🔁 재시험 대기 (지난 수업)</h2>${d.pending.map((t) => `<div class="row wrow"><b>${h((d.students.find((x) => x.id === t.student_id) || {}).name || '')}</b><span class="small muted">${prettyDate(t.date)} · ${h(t.book || '')} ${h(t.range || '')}${wLabel(t) ? ' · ' + h(wLabel(t)) : ''}</span>${chip(t)}<span class="space"></span><button class="btn sm primary" data-re="${t.id}" data-sid="${t.student_id}">재시험</button></div>`).join('')}</div>` : ''}
         <div class="card mt"><div class="wlist">${d.students.map((s) => {
           const ts = byStu.get(s.id) || [];
-          const last = ts[ts.length - 1];
+          // 지금 고른 Day·회독·유형의 시험만 보고 채점/재시험/통과를 정해요 (하루에 Day 여러 개를 쳐요)
+          const cur = ts.filter((t) => (t.range || '') === (st.range || '') && (t.round || null) === (st.round || null) && (t.kind || null) === (st.kind || null));
+          const last = cur[cur.length - 1];
           const need = last && !last.passed;
           return `<div class="wrow">
             <button class="wname" data-stu="${s.id}">${sAvatar(s, 34)}<span><b>${h(s.name)}</b><span class="small muted"> ${h(s.grade || '')}</span>${s.has_phone ? '' : '<span class="small red-t"> · 학생 번호 없음</span>'}</span></button>
             <div class="chips">${ts.map(chip).join('')}</div>
             <span class="space"></span>
-            ${!ts.length ? `<button class="btn sm primary" data-stu="${s.id}">채점</button>` : need ? `<button class="btn sm" style="border-color:var(--red);color:var(--red)" data-re="${last.id}" data-sid="${s.id}">재시험</button>` : '<span class="chip green">통과</span>'}
+            ${!last ? `<button class="btn sm primary" data-stu="${s.id}">채점</button>` : need ? `<button class="btn sm" style="border-color:var(--red);color:var(--red)" data-re="${last.id}" data-sid="${s.id}">재시험</button>` : '<span class="chip green">통과</span>'}
           </div>`;
         }).join('') || '<div class="empty">이 반에 학생이 없어요</div>'}</div></div>`;
       const sync = () => {
         const bk = $('#wbook', box).value;
         if (bk && bk !== '__') st.book = bk;
-        if ($('#wfrom', box)) { const f = $('#wfrom', box).value, t = $('#wto', box).value; st.range = t && t !== f ? `${f}~${t.replace(/^Day /, '')}` : f; }
+        if ($('#wfrom', box)) st.range = $('#wfrom', box).value;
         if ($('#wrange', box)) st.range = $('#wrange', box).value.trim();
         st.total = Number($('#wtotal', box).value) || st.total;
       };
@@ -666,8 +670,7 @@
         st.book = e.target.value; st.range = ''; draw();
       };
       if ($('#wfrom', box)) {
-        const m = st.range.match(/^(.*?)(?:~(\d+))?$/);
-        if (m && ro.includes(m[1])) { $('#wfrom', box).value = m[1]; if (m[2]) $('#wto', box).value = `Day ${m[2]}`; }
+        $('#wfrom', box).onchange = () => { sync(); draw(); };
       }
       $$('[data-stu]', box).forEach((b) => (b.onclick = () => { sync(); gradeModal(d, Number(b.dataset.stu), st, null, () => renderWordClass(box, courseId, date)); }));
       $$('[data-re]', box).forEach((b) => (b.onclick = () => {
