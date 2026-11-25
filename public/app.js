@@ -598,7 +598,7 @@
   async function renderWordClass(box, courseId, date) {
     const d = await api('GET', `/api/word/class?course_id=${courseId}&date=${date}`);
     const st = { book: (d.last && d.last.book) || '', range: (d.last && d.last.range) || '', total: (d.last && d.last.total) || 20, round: (d.last && d.last.round) || 1, kind: (d.last && d.last.kind) || '한글뜻' };
-    const kinds = d.word_kinds || { 한글뜻: 80, 스펠링: 90, 혼합: 90 };
+    const kinds = d.word_kinds || { 한글뜻: 90, 스펠링: 80, 혼합: 90 };
     const wLabel = (t) => [t.round ? `${t.round}회독` : '', t.kind || ''].filter(Boolean).join(' · ');
     // 수업 있는 요일의 날짜들 (4주 전 ~ 2주 뒤)
     const classDays = (d.course.days || '').split(',').filter(Boolean);
@@ -687,7 +687,7 @@
     const s = d.students.find((x) => x.id === sid) || { name: '' };
     let score = retestOf ? retestOf.score : st.total;
     let photo = null;
-    const kinds = d.word_kinds || { 한글뜻: 80, 스펠링: 90, 혼합: 90 };
+    const kinds = d.word_kinds || { 한글뜻: 90, 스펠링: 80, 혼합: 90 };
     const pct = st.kind && kinds[st.kind] ? kinds[st.kind] : d.pass_pct;
     const passOf = (total) => Math.ceil((total * pct) / 100);
     const label = [st.round ? `${st.round}회독` : '', st.kind || ''].filter(Boolean).join(' · ');
@@ -1953,7 +1953,7 @@
         <label class="field"><span>📚 교재비 청구서 문구</span><textarea name="tpl_bill_book" style="min-height:130px">${h(s.tpl_bill_book)}</textarea></label>
         <label class="field"><span>🧾 함께 청구할 때 문구</span><textarea name="tpl_bill" style="min-height:130px">${h(s.tpl_bill)}</textarea></label>
         <h2 class="mt">영단어 시험</h2>
-        <div class="small">통과 기준은 시험 유형별로 고정이에요: <b>한글뜻 80%</b> · <b>스펠링 90%</b> · <b>혼합 90%</b>. 채점 화면에서 회독(1~4회독)과 유형을 골라요.<input type="hidden" name="word_pass_pct" value="${h(s.word_pass_pct || 90)}"></div>
+        <div class="small">통과 기준은 시험 유형별로 고정이에요: <b>한글뜻 90%</b> · <b>스펠링 80%</b> · <b>혼합 90%</b>. 채점 화면에서 회독(1~4회독)과 유형을 골라요.<input type="hidden" name="word_pass_pct" value="${h(s.word_pass_pct || 90)}"></div>
         <p class="small muted mt">단어 교재 (교재 이름과 Day 수 · 채점 화면에서 Day 1~N으로 범위를 고를 수 있어요. 반 관리에서 교재·단원을 넣은 반은 그 단원으로 골라요)</p>
         <div id="wbooks">${s.word_books.map((b) => `<div class="row wb-row" style="margin-bottom:6px"><input type="text" class="wb-name" value="${h(b.name)}" style="flex:2"><input type="number" class="wb-days" value="${b.days}" style="width:90px"><span class="small muted">Day</span><button type="button" class="btn sm danger" data-wbdel>✕</button></div>`).join('')}</div>
         <button type="button" class="btn sm" id="wbAdd">＋ 단어 교재 추가</button>

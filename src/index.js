@@ -1476,8 +1476,8 @@ route('PUT', '/api/classlog', async ({ db, user, body }) => {
 // ───────── 영단어 시험 채점 ─────────
 const WORD_PHOTO_MAX = 900 * 1024;
 function wordBooks(s) { try { const a = JSON.parse(s.word_books); return Array.isArray(a) ? a.filter((b) => b && b.name) : []; } catch { return []; } }
-// 시험 유형별 통과 기준(고정): 한글뜻 80%, 스펠링·혼합 90%
-const WORD_KINDS = { 한글뜻: 80, 스펠링: 90, 혼합: 90 };
+// 시험 유형별 통과 기준(고정): 한글뜻 90%, 스펠링 80%, 혼합 90%
+const WORD_KINDS = { 한글뜻: 90, 스펠링: 80, 혼합: 90 };
 const WORD_ROUNDS = 4;
 const wordLabel = (t) => [t.round ? `${t.round}회독` : '', t.kind || ''].filter(Boolean).join(' · ');
 const attemptLabel = (n) => (n <= 1 ? '본시험' : `재시험${n > 2 ? ' ' + (n - 1) + '차' : ''}`);
@@ -1525,7 +1525,7 @@ route('POST', '/api/word/tests', async ({ db, env, user, body, url }) => {
     // 재시험은 본시험과 같은 회독·유형으로
     kind = kind || prev.kind; round = round || prev.round;
   }
-  // 유형이 정해지면 통과 기준은 고정 (한글뜻 80%, 스펠링·혼합 90%)
+  // 유형이 정해지면 통과 기준은 고정 (한글뜻 90%, 스펠링 80%, 혼합 90%)
   const pass = kind ? Math.ceil((total * WORD_KINDS[kind]) / 100)
     : body.pass_score != null && body.pass_score !== '' ? Math.trunc(Number(body.pass_score)) : Math.ceil((total * (Number(settings.word_pass_pct) || 90)) / 100);
   let photo = null;
