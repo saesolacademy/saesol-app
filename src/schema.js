@@ -379,6 +379,9 @@ const MIGRATIONS = [
   'ALTER TABLE class_logs ADD COLUMN extras TEXT',
   'ALTER TABLE enrollments ADD COLUMN fee INTEGER',
   'ALTER TABLE consultations ADD COLUMN subject TEXT',
+  // 영단어 시험: 회독(1~4)과 시험 유형(한글뜻/스펠링/혼합)
+  'ALTER TABLE word_tests ADD COLUMN round INTEGER',
+  'ALTER TABLE word_tests ADD COLUMN kind TEXT',
 ];
 
 let initialized = false;

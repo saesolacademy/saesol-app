@@ -597,12 +597,25 @@
 
   async function renderWordClass(box, courseId, date) {
     const d = await api('GET', `/api/word/class?course_id=${courseId}&date=${date}`);
-    const st = { book: (d.last && d.last.book) || '', range: (d.last && d.last.range) || '', total: (d.last && d.last.total) || 20 };
+    const st = { book: (d.last && d.last.book) || '', range: (d.last && d.last.range) || '', total: (d.last && d.last.total) || 20, round: (d.last && d.last.round) || 1, kind: (d.last && d.last.kind) || '한글뜻' };
+    const kinds = d.word_kinds || { 한글뜻: 80, 스펠링: 90, 혼합: 90 };
+    const wLabel = (t) => [t.round ? `${t.round}회독` : '', t.kind || ''].filter(Boolean).join(' · ');
+    // 수업 있는 요일의 날짜들 (4주 전 ~ 2주 뒤)
+    const classDays = (d.course.days || '').split(',').filter(Boolean);
+    const classDates = [];
+    if (classDays.length) {
+      const base = new Date(date + 'T00:00:00');
+      for (let i = -28; i <= 14; i++) {
+        const x = new Date(base); x.setDate(x.getDate() + i);
+        const wd = '일월화수목금토'[x.getDay()];
+        if (classDays.includes(wd)) classDates.push({ v: `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`, label: `${x.getMonth() + 1}/${x.getDate()}(${wd})` });
+      }
+    }
     const books = [...new Set([...d.units.map((u) => u.book).filter(Boolean), ...d.word_books.map((b) => b.name)])];
     const byStu = new Map();
     for (const t of d.tests) { if (!byStu.has(t.student_id)) byStu.set(t.student_id, []); byStu.get(t.student_id).push(t); }
     const pendingBy = new Map(d.pending.map((t) => [t.student_id, t]));
-    const chip = (t) => `<span class="wchip ${t.passed ? 'ok' : 'no'}" data-wt="${t.id}">${t.attempt > 1 ? '재 ' : ''}${t.score}/${t.total} ${t.passed ? '✓' : '✗'}${t.photo_v ? ' 📷' : ''}</span>`;
+    const chip = (t) => `<span class="wchip ${t.passed ? 'ok' : 'no'}" data-wt="${t.id}" title="${h(wLabel(t))}">${t.attempt > 1 ? '재 ' : ''}${t.score}/${t.total} ${t.passed ? '✓' : '✗'}${t.photo_v ? ' 📷' : ''}</span>`;
     const rangeOpts = () => {
       const fromUnits = d.units.filter((u) => u.book === st.book).map((u) => u.title);
       const wb = d.word_books.find((b) => b.name === st.book);
@@ -614,14 +627,18 @@
       box.innerHTML = `
         <div class="card mt">
           <div class="row"><h2 style="margin:0">${h(d.course.name)}</h2><span class="small muted">${prettyDate(date)}</span></div>
+          <div class="field mt"><span>📅 수업 날짜 ${classDays.length ? `(${classDays.join('·')}요일)` : ''}</span>
+            ${classDates.length ? `<div class="tabs" style="flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px">${classDates.map((x) => `<button type="button" class="btn sm ${x.v === date ? 'primary' : ''}" data-wdate="${x.v}" style="white-space:nowrap">${x.label}</button>`).join('')}</div>` : '<div class="small muted">[반 관리]에서 이 반의 수업 요일을 정하면 여기에 수업 날짜가 나와요. 지금은 위쪽 날짜 칸에서 골라 주세요.</div>'}</div>
+          <div class="field"><span>🔁 회독</span><div class="tabs">${Array.from({ length: d.word_rounds || 4 }, (_, i) => i + 1).map((n) => `<button type="button" class="btn sm ${st.round === n ? 'primary' : ''}" data-wround="${n}">${n}회독</button>`).join('')}</div></div>
+          <div class="field"><span>📝 시험 유형 · 통과 기준</span><div class="tabs">${Object.entries(kinds).map(([k, pct]) => `<button type="button" class="btn sm ${st.kind === k ? 'primary' : ''}" data-wkind="${k}">${k} <span class="small">(${pct}%)</span></button>`).join('')}</div></div>
           <div class="grid g3f mt">
             <label class="field"><span>교재</span><select id="wbook"><option value="">— 고르기 —</option>${books.map((b) => `<option ${st.book === b ? 'selected' : ''}>${h(b)}</option>`).join('')}<option value="__">직접 적기…</option></select></label>
             <label class="field"><span>시험 범위</span>${ro.length ? `<div class="row" style="flex-wrap:nowrap"><select id="wfrom">${ro.map((x) => `<option>${h(x)}</option>`).join('')}</select><span class="muted">~</span><select id="wto"><option value="">(한 단원)</option>${ro.map((x) => `<option>${h(x)}</option>`).join('')}</select></div>` : `<input type="text" id="wrange" value="${h(st.range)}" placeholder="예: Day 1~2">`}</label>
-            <label class="field"><span>문항 수 · 통과 기준 ${d.pass_pct}%</span><input type="number" id="wtotal" value="${st.total}" min="1" max="500" inputmode="numeric"></label>
+            <label class="field"><span>문항 수 · 통과 <b id="wpass">${Math.ceil((st.total * kinds[st.kind]) / 100)}</b>개 이상 (${kinds[st.kind]}%)</span><input type="number" id="wtotal" value="${st.total}" min="1" max="500" inputmode="numeric"></label>
           </div>
           <div class="small muted">학생 이름을 누르면 채점 화면이 열려요. ✗는 불통이에요. 결과 칸을 누르면 시험지를 볼 수 있어요.</div>
         </div>
-        ${d.pending.length ? `<div class="card mt missbox"><h2>🔁 재시험 대기 (지난 수업)</h2>${d.pending.map((t) => `<div class="row wrow"><b>${h((d.students.find((x) => x.id === t.student_id) || {}).name || '')}</b><span class="small muted">${prettyDate(t.date)} · ${h(t.book || '')} ${h(t.range || '')}</span>${chip(t)}<span class="space"></span><button class="btn sm primary" data-re="${t.id}" data-sid="${t.student_id}">재시험</button></div>`).join('')}</div>` : ''}
+        ${d.pending.length ? `<div class="card mt missbox"><h2>🔁 재시험 대기 (지난 수업)</h2>${d.pending.map((t) => `<div class="row wrow"><b>${h((d.students.find((x) => x.id === t.student_id) || {}).name || '')}</b><span class="small muted">${prettyDate(t.date)} · ${h(t.book || '')} ${h(t.range || '')}${wLabel(t) ? ' · ' + h(wLabel(t)) : ''}</span>${chip(t)}<span class="space"></span><button class="btn sm primary" data-re="${t.id}" data-sid="${t.student_id}">재시험</button></div>`).join('')}</div>` : ''}
         <div class="card mt"><div class="wlist">${d.students.map((s) => {
           const ts = byStu.get(s.id) || [];
           const last = ts[ts.length - 1];
@@ -640,6 +657,10 @@
         if ($('#wrange', box)) st.range = $('#wrange', box).value.trim();
         st.total = Number($('#wtotal', box).value) || st.total;
       };
+      $$('[data-wdate]', box).forEach((b) => (b.onclick = () => (location.hash = `#/word?date=${b.dataset.wdate}&course=${courseId}`)));
+      $$('[data-wround]', box).forEach((b) => (b.onclick = () => { sync(); st.round = Number(b.dataset.wround); draw(); }));
+      $$('[data-wkind]', box).forEach((b) => (b.onclick = () => { sync(); st.kind = b.dataset.wkind; draw(); }));
+      $('#wtotal', box).oninput = (e) => { $('#wpass', box).textContent = Math.ceil(((Number(e.target.value) || 0) * kinds[st.kind]) / 100); };
       $('#wbook', box).onchange = (e) => {
         if (e.target.value === '__') { const v = prompt('교재 이름을 적어 주세요'); if (v) { st.book = v.trim(); books.push(st.book); } draw(); return; }
         st.book = e.target.value; st.range = ''; draw();
@@ -652,7 +673,7 @@
       $$('[data-re]', box).forEach((b) => (b.onclick = () => {
         sync();
         const prev = [...d.tests, ...d.pending].find((t) => t.id === Number(b.dataset.re));
-        gradeModal(d, Number(b.dataset.sid), { book: prev.book, range: prev.range, total: prev.total }, prev, () => renderWordClass(box, courseId, date));
+        gradeModal(d, Number(b.dataset.sid), { book: prev.book, range: prev.range, total: prev.total, round: prev.round, kind: prev.kind }, prev, () => renderWordClass(box, courseId, date));
       }));
       $$('[data-wt]', box).forEach((c) => (c.onclick = () => { const t = [...d.tests, ...d.pending].find((x) => x.id === Number(c.dataset.wt)); wordViewModal(t, () => renderWordClass(box, courseId, date)); }));
     };
@@ -663,15 +684,18 @@
     const s = d.students.find((x) => x.id === sid) || { name: '' };
     let score = retestOf ? retestOf.score : st.total;
     let photo = null;
-    const passOf = (total) => Math.ceil((total * d.pass_pct) / 100);
+    const kinds = d.word_kinds || { 한글뜻: 80, 스펠링: 90, 혼합: 90 };
+    const pct = st.kind && kinds[st.kind] ? kinds[st.kind] : d.pass_pct;
+    const passOf = (total) => Math.ceil((total * pct) / 100);
+    const label = [st.round ? `${st.round}회독` : '', st.kind || ''].filter(Boolean).join(' · ');
     modal({
       title: `${s.name} ${retestOf ? '재시험' : '단어시험'} 채점`, wide: true, submitText: '저장하고 보내기',
       body: `
-        <div class="small muted">${h(st.book || '교재 미선택')} · ${h(st.range || '범위 미선택')}${retestOf ? ` · 지난 결과 ${retestOf.score}/${retestOf.total} ✗` : ''}</div>
+        <div class="small muted">${h(st.book || '교재 미선택')} · ${h(st.range || '범위 미선택')}${label ? ` · <b>${h(label)}</b>` : ''}${retestOf ? ` · 지난 결과 ${retestOf.score}/${retestOf.total} ✗` : ''}</div>
         <label class="photo-btn mt"><input type="file" accept="image/*" capture="environment" id="wph" hidden><span id="wphTxt">📷 채점한 시험지 찍기</span><img id="wprev" hidden></label>
         <div class="grid g2 mt">
           <label class="field"><span>문항 수</span><input type="number" name="total" value="${st.total}" min="1" inputmode="numeric"></label>
-          <label class="field"><span>통과 기준 (맞은 개수)</span><input type="number" name="pass_score" value="${passOf(st.total)}" min="0" inputmode="numeric"></label>
+          <label class="field"><span>통과 기준 (맞은 개수 · ${pct}% 고정)</span><input type="number" name="pass_score" value="${passOf(st.total)}" min="0" inputmode="numeric" ${st.kind ? 'readonly style="background:#f3f5ef"' : ''}></label>
         </div>
         <div class="scorebox">
           <button type="button" class="btn" data-d="-1">−</button>
@@ -712,7 +736,7 @@
       },
       onSubmit: async (fd) => {
         const r = await api('POST', '/api/word/tests', {
-          student_id: sid, course_id: d.course.id, date: d.date, book: st.book, range: st.range,
+          student_id: sid, course_id: d.course.id, date: d.date, book: st.book, range: st.range, round: st.round, kind: st.kind,
           total: fd.total, score, pass_score: fd.pass_score, memo: fd.memo, photo, send: !!fd.send, retest_of: retestOf ? retestOf.id : null,
         });
         const sent = r.sent.length ? ` · 보냄: ${r.sent.map((x) => `${x.to} ${x.status}`).join(', ')}` : '';
@@ -726,7 +750,7 @@
     modal({
       title: `단어시험 ${t.attempt > 1 ? '재시험' : '본시험'} · ${prettyDate(t.date)}`,
       body: `<div class="row"><b style="font-size:24px">${t.score} / ${t.total}</b>${t.passed ? '<span class="chip green">통과</span>' : `<span class="chip red">불통 (기준 ${t.pass_score})</span>`}</div>
-        <div class="small muted">${h(t.book || '')} ${h(t.range || '')} · ${h(t.teacher_name || '')}${t.sent_at ? ' · 보냄 ' + prettyTime(t.sent_at) : ''}</div>
+        <div class="small muted">${h(t.book || '')} ${h(t.range || '')}${t.round ? ` · ${t.round}회독` : ''}${t.kind ? ` · ${h(t.kind)}` : ''} · ${h(t.teacher_name || '')}${t.sent_at ? ' · 보냄 ' + prettyTime(t.sent_at) : ''}</div>
         ${t.memo ? `<p>${h(t.memo)}</p>` : ''}
         ${t.photo_v ? `<img src="/api/word/photos/${t.id}?v=${t.photo_v}" style="width:100%;border-radius:10px;margin-top:10px">` : '<p class="muted small">시험지 사진이 없어요</p>'}`,
       foot: `<button type="button" class="btn sm danger" id="wdel">기록 지우기</button>`,
@@ -1459,7 +1483,7 @@
     for (const f of d.feedbacks) tl.push({ type: '피드백', date: (f.sent_at || f.updated_at || '').slice(0, 10), subject: f.subject, html: `<div class="row"><b>${h(f.period_title)}</b>${statusChip(f.status)}</div><div class="content small">${h(f.content)}</div>` });
     for (const b of d.books || []) tl.push({ type: '교재', date: b.date, subject: b.subject || '공통', html: `<div class="row">${b.book_id ? bookImg(b.book_id, b.book_image_v, 26) : ''}<b>${h(b.title)}</b><span class="small muted">${b.qty}권 · ${won(b.price)} · ${h(b.given_by_name || '')}</span></div>` });
     for (const p of [...(d.tuition || []), ...(d.bookpay || [])]) tl.push({ type: '수납', date: p.paid_date, subject: '공통', html: `<div class="row"><b>${h(p.kind)}</b>${p.month ? `<span class="small muted">${h(p.month)}분</span>` : ''}<b>${won(p.amount)}</b><span class="small muted">${h(p.method || '')} ${h(p.memo || '')}</span></div>` });
-    for (const w of d.words || []) tl.push({ type: '단어시험', date: w.date, subject: '영어', html: `<div class="row"><span class="wchip ${w.passed ? 'ok' : 'no'}">${w.attempt > 1 ? '재시험 ' : ''}${w.score}/${w.total} ${w.passed ? '✓ 통과' : '✗ 불통'}</span><span class="small muted">${h(w.book || '')} ${h(w.range || '')} · ${h(w.teacher_name || '')}</span>${w.photo_v ? `<a href="/api/word/photos/${w.id}?v=${w.photo_v}" target="_blank" class="small">📷 시험지</a>` : ''}</div>${w.memo ? `<div class="small">${h(w.memo)}</div>` : ''}` });
+    for (const w of d.words || []) tl.push({ type: '단어시험', date: w.date, subject: '영어', html: `<div class="row"><span class="wchip ${w.passed ? 'ok' : 'no'}">${w.attempt > 1 ? '재시험 ' : ''}${w.score}/${w.total} ${w.passed ? '✓ 통과' : '✗ 불통'}</span><span class="small muted">${h(w.book || '')} ${h(w.range || '')}${w.round ? ` · ${w.round}회독` : ''}${w.kind ? ` · ${h(w.kind)}` : ''} · ${h(w.teacher_name || '')}</span>${w.photo_v ? `<a href="/api/word/photos/${w.id}?v=${w.photo_v}" target="_blank" class="small">📷 시험지</a>` : ''}</div>${w.memo ? `<div class="small">${h(w.memo)}</div>` : ''}` });
     for (const b of d.bills || []) tl.push({ type: '청구서', date: (b.sent_at || '').slice(0, 10), subject: '공통', html: `<div class="row"><b>${Number(b.month.slice(5))}월 ${b.kind === 'book' ? '교재비' : b.kind === 'tuition' ? '교육비' : ''} 청구서 ${won(b.total)}</b>${statusChip(b.status)}<span class="small muted">${h(b.sent_by_name || '')}</span></div>` });
     for (const x of d.subjects || []) {
       if (x.start_date) tl.push({ type: '등록·퇴원', date: x.start_date, subject: x.subject, html: `<div class="row"><b>${h(x.subject)} 등록</b></div>` });
@@ -1926,7 +1950,7 @@
         <label class="field"><span>📚 교재비 청구서 문구</span><textarea name="tpl_bill_book" style="min-height:130px">${h(s.tpl_bill_book)}</textarea></label>
         <label class="field"><span>🧾 함께 청구할 때 문구</span><textarea name="tpl_bill" style="min-height:130px">${h(s.tpl_bill)}</textarea></label>
         <h2 class="mt">영단어 시험</h2>
-        <div class="row"><label class="inline-check">통과 기준 <input type="number" name="word_pass_pct" value="${h(s.word_pass_pct || 90)}" min="1" max="100" style="width:80px"> % 이상 맞히면 통과</label></div>
+        <div class="small">통과 기준은 시험 유형별로 고정이에요: <b>한글뜻 80%</b> · <b>스펠링 90%</b> · <b>혼합 90%</b>. 채점 화면에서 회독(1~4회독)과 유형을 골라요.<input type="hidden" name="word_pass_pct" value="${h(s.word_pass_pct || 90)}"></div>
         <p class="small muted mt">단어 교재 (교재 이름과 Day 수 · 채점 화면에서 Day 1~N으로 범위를 고를 수 있어요. 반 관리에서 교재·단원을 넣은 반은 그 단원으로 골라요)</p>
         <div id="wbooks">${s.word_books.map((b) => `<div class="row wb-row" style="margin-bottom:6px"><input type="text" class="wb-name" value="${h(b.name)}" style="flex:2"><input type="number" class="wb-days" value="${b.days}" style="width:90px"><span class="small muted">Day</span><button type="button" class="btn sm danger" data-wbdel>✕</button></div>`).join('')}</div>
         <button type="button" class="btn sm" id="wbAdd">＋ 단어 교재 추가</button>
