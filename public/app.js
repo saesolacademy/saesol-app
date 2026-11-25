@@ -2022,7 +2022,7 @@
     const tabs = (key, list, label) => `<div class="tabs"><button class="btn sm ${!query[key] ? 'primary' : ''}" data-tab="${key}" data-v="">${label}</button>${list.map((x) => `<button class="btn sm ${query[key] === x ? 'primary' : ''}" data-tab="${key}" data-v="${h(x)}">${h(x)}</button>`).join('')}</div>`;
     el.innerHTML = `
       <div class="page-head"><div><h1>교재 관리</h1><p>교재를 등록하고 입고를 기록하면 재고가 자동으로 계산돼요. 학생에게 배부하면 재고에서 빠지고 학생 카드에 기록돼요.</p></div>
-        ${manage ? '<button class="btn primary" id="addBk">＋ 교재 등록</button>' : ''}</div>
+        ${manage ? '<div class="row"><button class="btn" id="importBk">📂 엑셀로 한꺼번에 등록</button><button class="btn primary" id="addBk">＋ 교재 등록</button></div>' : ''}</div>
       <div class="card">
         ${tabs('level', d.levels, '전체 학년')}
         <div style="margin-top:6px">${tabs('subject', ['국어', '영어', '수학', '과학', '사회', '기타'], '전체 과목')}</div>
@@ -2048,8 +2048,84 @@
     $$('[data-tab]', el).forEach((b) => (b.onclick = () => go({ [b.dataset.tab]: b.dataset.v })));
     $('#bf').onsubmit = (e) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); go({ supplier: f.supplier, q: f.q, low: f.low ? '1' : '', all: f.all ? '1' : '' }); };
     if ($('#addBk')) $('#addBk').onclick = () => bookModal(d);
+    if ($('#importBk')) $('#importBk').onclick = () => bookImportModal();
     $$('[data-in]', el).forEach((b) => (b.onclick = () => stockModal(books.find((x) => x.id === Number(b.dataset.in)), d.suppliers)));
     $$('[data-give]', el).forEach((b) => (b.onclick = () => deliverModal(books.find((x) => x.id === Number(b.dataset.give)))));
+  }
+
+  // 엑셀 파일(아이키즈에서 옮긴 목록 등)로 교재 여러 개 한꺼번에 등록
+  function bookImportModal() {
+    let list = null;
+    const pick = (head, re) => head.findIndex((x) => re.test(x));
+    const parse = (grid) => {
+      const hi = grid.findIndex((r) => r.some((c) => /교재명|교재이름|물품명/.test(String(c).replace(/\s/g, ''))));
+      if (hi < 0) throw new Error('제목 줄에 "교재명" 칸이 있어야 해요');
+      const head = grid[hi].map((c) => String(c).replace(/\s/g, ''));
+      const col = {
+        name: pick(head, /교재명|교재이름|물품명/), level: pick(head, /학교급|학년/), subject: pick(head, /과목/), cat: pick(head, /카테고리|분류/),
+        supplier: pick(head, /거래처/), list_price: pick(head, /정가|구매가/), sale_price: pick(head, /판매가|할인가/),
+        stock: pick(head, /재고|수량/), date: pick(head, /등록일|입고일/), memo: pick(head, /메모|비고/),
+      };
+      const get = (r, k) => (col[k] >= 0 ? String(r[col[k]] ?? '').trim() : '');
+      return grid.slice(hi + 1).map((r) => {
+        const cat = get(r, 'cat');
+        let level = get(r, 'level'), subject = get(r, 'subject');
+        if (!level) level = (cat.match(/^(유아|초등|중등|고등)/) || [])[1] || '';
+        if (!subject) subject = (cat.match(/(국어|영어|수학|과학|사회)/) || [])[1] || (/몬스터|연산|매스/.test(cat) ? '수학' : '');
+        let date = get(r, 'date');
+        if (/^\d+(\.\d+)?$/.test(date)) date = excelDate(date).slice(0, 10);
+        date = date.replace(/[.\/]\s*/g, '-').replace(/-$/, '');
+        return { name: get(r, 'name'), level, subject, supplier: get(r, 'supplier'), list_price: get(r, 'list_price'), sale_price: get(r, 'sale_price'), stock: get(r, 'stock'), date, memo: get(r, 'memo') };
+      }).filter((x) => x.name);
+    };
+    modal({
+      title: '엑셀로 교재 한꺼번에 등록', wide: true, submitText: '파일을 먼저 골라 주세요',
+      body: `
+        <div class="howto">
+          엑셀 파일을 고르면 미리 보기가 나와요. 확인하고 <b>등록하기</b>를 누르면 끝이에요.
+          <div class="small muted" style="margin-top:6px">알아듣는 제목: <b>교재명</b> · 학교급 · 과목 · 카테고리 · 거래처 · 구매가(정가) · 판매가 · 재고 · 등록일 · 메모<br>
+          이미 같은 이름으로 등록된 교재는 건너뛰어요. 재고가 있으면 첫 입고로 기록돼요.</div>
+          <div class="row" style="margin-top:8px"><label class="btn sm primary" style="cursor:pointer">📂 엑셀 파일 고르기<input type="file" id="bkFile" accept=".xlsx,.csv" hidden></label><span class="small muted" id="bkFileName"></span></div>
+        </div>
+        <div id="bkPreview"></div>`,
+      onOpen: (f) => {
+        $('#bkFile', f).onchange = async (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          $('.err', f).textContent = '';
+          try {
+            const grid = /\.csv$/i.test(file.name) ? (await file.text()).replace(/^﻿/, '').split(/\r?\n/).map((l) => l.split(',')) : await readXlsx(file);
+            list = parse(grid);
+            if (!list.length) throw new Error('읽을 교재가 없어요');
+            $('#bkFileName', f).textContent = file.name;
+            const count = (k) => Object.entries(list.reduce((a, x) => ((a[x[k] || '(없음)'] = (a[x[k] || '(없음)'] || 0) + 1), a), {})).map(([k2, v]) => `${h(k2)} ${v}`).join(' · ');
+            $('#bkPreview', f).innerHTML = `
+              <div class="mt"><b>미리 보기</b> — 모두 <b>${list.length}개</b> (앞의 10개만 보여요)</div>
+              <div class="small muted">학교급: ${count('level')}<br>과목: ${count('subject')}<br>거래처: ${count('supplier')}</div>
+              <div class="table-wrap" style="margin-top:6px"><table class="list"><thead><tr><th>교재명</th><th>학교급</th><th>과목</th><th>거래처</th><th>정가</th><th>판매가</th><th>재고</th></tr></thead>
+              <tbody>${list.slice(0, 10).map((x) => `<tr><td class="small">${h(x.name)}</td><td class="small">${h(x.level)}</td><td class="small">${h(x.subject)}</td><td class="small">${h(x.supplier)}</td><td class="small">${h(x.list_price)}</td><td class="small">${h(x.sale_price)}</td><td class="small">${h(x.stock)}</td></tr>`).join('')}</tbody></table></div>
+              <div id="bkProgress" class="small" style="margin-top:6px"></div>`;
+            $('button[type=submit]', f).textContent = `이대로 ${list.length}개 등록하기`;
+          } catch (err) { list = null; $('.err', f).textContent = err.message; }
+          e.target.value = '';
+        };
+      },
+      onSubmit: async (d, f) => {
+        if (!list) throw new Error('엑셀 파일을 먼저 골라 주세요');
+        const btn = $('button[type=submit]', f);
+        btn.disabled = true;
+        let added = 0, skipped = 0, stocked = 0;
+        try {
+          for (let i = 0; i < list.length; i += 15) {
+            $('#bkProgress', f).textContent = `등록하는 중… ${i} / ${list.length}`;
+            const r = await api('POST', '/api/catalog/import', { rows: list.slice(i, i + 15) });
+            added += r.added; skipped += r.skipped; stocked += r.stocked;
+          }
+        } finally { btn.disabled = false; }
+        toast(`${added}개 등록했어요${skipped ? ` (이미 있어서 건너뜀 ${skipped}개)` : ''}`);
+        reload();
+      },
+    });
   }
 
   function bookModal(meta, b = null) {

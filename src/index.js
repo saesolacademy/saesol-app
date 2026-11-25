@@ -1248,6 +1248,38 @@ route('POST', '/api/catalog', async ({ db, user, body }) => {
   if (qty) await q.run(db, 'INSERT INTO book_stock (book_id, date, qty, supplier, created_by) VALUES (?, ?, ?, ?, ?)', id, isDate(body.first_date) ? body.first_date : today(), qty, v.supplier, user.id);
   return { ok: true, id };
 }, OM);
+// 엑셀로 교재 여러 개 한꺼번에 등록 (화면에서 15개씩 나눠 보내요)
+// 같은 이름의 교재가 이미 있으면 건너뛰고, 재고가 있으면 첫 입고로 기록해요.
+route('POST', '/api/catalog/import', async ({ db, user, body }) => {
+  const rows = Array.isArray(body.rows) ? body.rows.slice(0, 20) : [];
+  const exist = new Set((await q.all(db, 'SELECT name FROM books')).map((r) => normName(r.name)));
+  const stmts = [];
+  const newSup = new Set();
+  let added = 0, skipped = 0, stocked = 0;
+  for (const r of rows) {
+    const name = clean(r.name);
+    if (!name || exist.has(normName(name))) { skipped++; continue; }
+    exist.add(normName(name));
+    const num = (v) => { const n = Number(String(v ?? '').replace(/[^0-9]/g, '')); return String(v ?? '').trim() === '' || !Number.isFinite(n) || n > 100000000 ? null : n; };
+    const supplier = clean(r.supplier);
+    if (supplier) newSup.add(supplier);
+    stmts.push(db.prepare('INSERT INTO books (level, subject, supplier, name, list_price, sale_price, memo, active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)')
+      .bind(BOOK_LEVELS.includes(r.level) ? r.level : null, SUBJECTS.includes(r.subject) ? r.subject : null, supplier, name.slice(0, 200), num(r.list_price), num(r.sale_price), clean(r.memo)));
+    const qty = Math.trunc(Number(r.stock) || 0);
+    if (qty > 0 && qty < 100000) {
+      stmts.push(db.prepare('INSERT INTO book_stock (book_id, date, qty, supplier, memo, created_by) VALUES (last_insert_rowid(), ?, ?, ?, ?, ?)')
+        .bind(isDate(r.date) ? r.date : today(), qty, supplier, '아이키즈에서 옮긴 재고', user.id));
+      stocked++;
+    }
+    added++;
+  }
+  // 처음 보는 거래처는 거래처 목록에도 넣어요
+  const sups = suppliersOf(await getSettings(db));
+  const more = [...newSup].filter((x) => !sups.includes(x));
+  if (more.length) stmts.push(db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('book_suppliers', ?)`).bind(JSON.stringify([...sups, ...more])));
+  if (stmts.length) await db.batch(stmts);
+  return { ok: true, added, skipped, stocked };
+}, OM);
 route('PATCH', '/api/catalog/:id', async ({ db, body, params }) => {
   const cur = await q.first(db, 'SELECT * FROM books WHERE id = ?', Number(params.id));
   if (!cur) fail(404, '교재를 찾을 수 없어요');
