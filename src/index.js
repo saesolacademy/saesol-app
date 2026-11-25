@@ -2254,7 +2254,7 @@ route('PUT', '/api/settings', async ({ db, env, body }) => {
   }
   if ('tpl_log_remind' in body) set.push(['tpl_log_remind', need(body.tpl_log_remind, '일지 알림 문구')]);
   if ('word_pass_pct' in body) set.push(['word_pass_pct', String(Math.max(1, Math.min(100, Math.trunc(Number(body.word_pass_pct) || 90))))]);
-  if ('word_books' in body) set.push(['word_books', JSON.stringify((body.word_books || []).map((b) => ({ name: clean(b.name), days: Math.max(1, Math.min(200, Math.trunc(Number(b.days) || 0))) })).filter((b) => b.name))]);
+  if ('word_books' in body) set.push(['word_books', JSON.stringify((body.word_books || []).map((b) => ({ name: clean(b.name), days: Math.max(1, Math.min(200, Math.trunc(Number(b.days) || 0))), unit: b.unit === 'Unit' ? 'Unit' : 'Day' })).filter((b) => b.name))]);
   if ('tpl_word' in body) set.push(['tpl_word', need(body.tpl_word, '단어시험 문자 문구')]);
   if ('discount_items' in body) {
     const items = (body.discount_items || [])

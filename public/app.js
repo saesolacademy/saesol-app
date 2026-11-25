@@ -615,11 +615,11 @@
     const byStu = new Map();
     for (const t of d.tests) { if (!byStu.has(t.student_id)) byStu.set(t.student_id, []); byStu.get(t.student_id).push(t); }
     const pendingBy = new Map(d.pending.map((t) => [t.student_id, t]));
-    const chip = (t) => `<span class="wchip ${t.passed ? 'ok' : 'no'}" data-wt="${t.id}" title="${h(wLabel(t))}">${t.range ? `<b>${h(t.range.replace(/^Day\s*/, 'D'))}</b> ` : ''}${t.attempt > 1 ? '재 ' : ''}${t.score}/${t.total} ${t.passed ? '✓' : '✗'}${t.photo_v ? ' 📷' : ''}</span>`;
+    const chip = (t) => `<span class="wchip ${t.passed ? 'ok' : 'no'}" data-wt="${t.id}" title="${h(wLabel(t))}">${t.range ? `<b>${h(t.range.replace(/^Day\s*/, 'D').replace(/^Unit\s*/, 'U'))}</b> ` : ''}${t.attempt > 1 ? '재 ' : ''}${t.score}/${t.total} ${t.passed ? '✓' : '✗'}${t.photo_v ? ' 📷' : ''}</span>`;
     const rangeOpts = () => {
       const fromUnits = d.units.filter((u) => u.book === st.book).map((u) => u.title);
       const wb = d.word_books.find((b) => b.name === st.book);
-      const days = wb ? Array.from({ length: wb.days }, (_, i) => `Day ${i + 1}`) : [];
+      const days = wb ? Array.from({ length: wb.days }, (_, i) => `${wb.unit === 'Unit' ? 'Unit' : 'Day'} ${i + 1}`) : [];
       return fromUnits.length ? fromUnits : days;
     };
     const draw = () => {
@@ -635,7 +635,7 @@
           <div class="field"><span>📝 시험 유형 · 통과 기준</span><div class="tabs">${Object.entries(kinds).map(([k, pct]) => `<button type="button" class="btn sm ${st.kind === k ? 'primary' : ''}" data-wkind="${k}">${k} <span class="small">(${pct}%)</span></button>`).join('')}</div></div>
           <div class="grid g3f mt">
             <label class="field"><span>교재</span><select id="wbook"><option value="">— 고르기 —</option>${books.map((b) => `<option ${st.book === b ? 'selected' : ''}>${h(b)}</option>`).join('')}<option value="__">직접 적기…</option></select></label>
-            <label class="field"><span>시험 범위 (Day 1개)</span>${ro.length ? `<select id="wfrom">${ro.map((x) => `<option ${x === st.range ? 'selected' : ''}>${h(x)}</option>`).join('')}</select>` : `<input type="text" id="wrange" value="${h(st.range)}" placeholder="예: Day 1">`}</label>
+            <label class="field"><span>시험 범위 (${h(((d.word_books.find((b) => b.name === st.book) || {}).unit) || 'Day')} 1개)</span>${ro.length ? `<select id="wfrom">${ro.map((x) => `<option ${x === st.range ? 'selected' : ''}>${h(x)}</option>`).join('')}</select>` : `<input type="text" id="wrange" value="${h(st.range)}" placeholder="예: Day 1">`}</label>
             <label class="field"><span>문항 수 · 통과 <b id="wpass">${Math.ceil((st.total * kinds[st.kind]) / 100)}</b>개 이상 (${kinds[st.kind]}%)</span><input type="number" id="wtotal" value="${st.total}" min="1" max="500" inputmode="numeric"></label>
           </div>
           <div class="small muted">학생 이름을 누르면 채점 화면이 열려요. ✗는 불통이에요. 결과 칸을 누르면 시험지를 볼 수 있어요.</div>
@@ -1954,8 +1954,8 @@
         <label class="field"><span>🧾 함께 청구할 때 문구</span><textarea name="tpl_bill" style="min-height:130px">${h(s.tpl_bill)}</textarea></label>
         <h2 class="mt">영단어 시험</h2>
         <div class="small">통과 기준은 시험 유형별로 고정이에요: <b>한글뜻 90%</b> · <b>스펠링 80%</b> · <b>혼합 90%</b>. 채점 화면에서 회독(1~4회독)과 유형을 골라요.<input type="hidden" name="word_pass_pct" value="${h(s.word_pass_pct || 90)}"></div>
-        <p class="small muted mt">단어 교재 (교재 이름과 Day 수 · 채점 화면에서 Day 1~N으로 범위를 고를 수 있어요. 반 관리에서 교재·단원을 넣은 반은 그 단원으로 골라요)</p>
-        <div id="wbooks">${s.word_books.map((b) => `<div class="row wb-row" style="margin-bottom:6px"><input type="text" class="wb-name" value="${h(b.name)}" style="flex:2"><input type="number" class="wb-days" value="${b.days}" style="width:90px"><span class="small muted">Day</span><button type="button" class="btn sm danger" data-wbdel>✕</button></div>`).join('')}</div>
+        <p class="small muted mt">단어 교재 (교재 이름 · 개수 · Day 또는 Unit. 채점 화면에서 Day 1~N 또는 Unit 1~N 중 하나를 골라요. 학원 자체 단어장은 Unit으로 정해 주세요. 반 관리에서 교재·단원을 넣은 반은 그 단원으로 골라요)</p>
+        <div id="wbooks">${s.word_books.map((b) => `<div class="row wb-row" style="margin-bottom:6px"><input type="text" class="wb-name" value="${h(b.name)}" style="flex:2"><input type="number" class="wb-days" value="${b.days}" style="width:80px"><select class="wb-unit" style="width:auto"><option ${b.unit === 'Unit' ? '' : 'selected'}>Day</option><option ${b.unit === 'Unit' ? 'selected' : ''}>Unit</option></select><span class="small muted">개</span><button type="button" class="btn sm danger" data-wbdel>✕</button></div>`).join('')}</div>
         <button type="button" class="btn sm" id="wbAdd">＋ 단어 교재 추가</button>
         <label class="field mt"><span>단어시험 결과 문자 — 쓸 수 있는 칸: {학원} {학생} {차수} {교재} {범위} {점수} {결과} {링크}</span><textarea name="tpl_word" style="min-height:110px">${h(s.tpl_word)}</textarea></label>
         <h2 class="mt">수업 일지 알림</h2>
@@ -1979,7 +1979,7 @@
       </form>`;
     const wireWb = (row) => ($('[data-wbdel]', row).onclick = () => row.remove());
     $$('.wb-row', el).forEach(wireWb);
-    $('#wbAdd').onclick = () => { const dv = document.createElement('div'); dv.className = 'row wb-row'; dv.style.marginBottom = '6px'; dv.innerHTML = '<input type="text" class="wb-name" placeholder="예: 워드마스터 중등 실력" style="flex:2"><input type="number" class="wb-days" value="40" style="width:90px"><span class="small muted">Day</span><button type="button" class="btn sm danger" data-wbdel>✕</button>'; $('#wbooks').appendChild(dv); wireWb(dv); };
+    $('#wbAdd').onclick = () => { const dv = document.createElement('div'); dv.className = 'row wb-row'; dv.style.marginBottom = '6px'; dv.innerHTML = '<input type="text" class="wb-name" placeholder="예: 워드마스터 중등 실력" style="flex:2"><input type="number" class="wb-days" value="40" style="width:80px"><select class="wb-unit" style="width:auto"><option selected>Day</option><option>Unit</option></select><span class="small muted">개</span><button type="button" class="btn sm danger" data-wbdel>✕</button>'; $('#wbooks').appendChild(dv); wireWb(dv); };
     const wireDisc = (row) => ($('[data-ddel]', row).onclick = () => row.remove());
     $$('.disc-row', el).forEach(wireDisc);
     $('#discAdd').onclick = () => {
@@ -1997,7 +1997,7 @@
         const teacher_view = Object.fromEntries(Object.keys(s.teacher_view_labels).map((k) => [k, !!d['tv_' + k]]));
         const discount_items = $$('.disc-row', e.target).map((r) => ({ id: $('[data-did]', r).value, name: $('[data-dname]', r).value, amount: $('[data-damt]', r).value })).filter((x) => x.name.trim());
         const book_suppliers = String(d.suppliers || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-        await api('PUT', '/api/settings', { academy_name: d.academy_name, mottos: [d.motto0, d.motto1, d.motto2], tpl_attendance: d.tpl_attendance, tpl_feedback: d.tpl_feedback, send_mode: d.send_mode, teacher_view, discount_items, book_suppliers, bank_account: d.bank_account, bank_account_book: d.bank_account_book, tpl_bill: d.tpl_bill, tpl_bill_tuition: d.tpl_bill_tuition, tpl_bill_book: d.tpl_bill_book, word_pass_pct: d.word_pass_pct, tpl_word: d.tpl_word, word_books: $$('.wb-row', e.target).map((r) => ({ name: $('.wb-name', r).value, days: $('.wb-days', r).value })), log_remind: { on: !!d.lr_on, after_min: d.lr_after, sms: !!d.lr_sms, start_date: d.lr_start }, tpl_log_remind: d.tpl_log_remind });
+        await api('PUT', '/api/settings', { academy_name: d.academy_name, mottos: [d.motto0, d.motto1, d.motto2], tpl_attendance: d.tpl_attendance, tpl_feedback: d.tpl_feedback, send_mode: d.send_mode, teacher_view, discount_items, book_suppliers, bank_account: d.bank_account, bank_account_book: d.bank_account_book, tpl_bill: d.tpl_bill, tpl_bill_tuition: d.tpl_bill_tuition, tpl_bill_book: d.tpl_bill_book, word_pass_pct: d.word_pass_pct, tpl_word: d.tpl_word, word_books: $$('.wb-row', e.target).map((r) => ({ name: $('.wb-name', r).value, days: $('.wb-days', r).value, unit: $('.wb-unit', r).value })), log_remind: { on: !!d.lr_on, after_min: d.lr_after, sms: !!d.lr_sms, start_date: d.lr_start }, tpl_log_remind: d.tpl_log_remind });
         state.academy = d.academy_name;
         toast('저장했어요');
         renderShell();
