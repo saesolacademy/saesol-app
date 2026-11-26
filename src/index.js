@@ -352,13 +352,40 @@ function discountItems(settings) {
     return [];
   }
 }
-async function discountTotals(db) {
-  const items = new Map(discountItems(await getSettings(db)).map((i) => [i.id, i]));
-  const m = new Map();
-  for (const r of await q.all(db, 'SELECT student_id, item_id FROM student_discounts')) {
-    const it = items.get(r.item_id);
-    if (it) m.set(r.student_id, (m.get(r.student_id) || 0) + (Number(it.amount) || 0));
+// 추가 수업료: 항목은 설정(extra_items, id가 x로 시작), 학생별 체크는 할인과 같은 표(student_discounts)에 저장
+function extraItems(settings) {
+  try {
+    const a = JSON.parse(settings.extra_items || '[]');
+    return Array.isArray(a) ? a.filter((x) => x && x.id && x.name) : [];
+  } catch {
+    return [];
   }
+}
+// 사고력수학 같은 추가 수업은 초등부 수학을 듣는 학생만 (학년·학교가 초등이거나 반 이름에 '초등'이 있으면)
+function elemMath(student, courses) {
+  const math = courses.filter((c) => c.active !== 0 && c.subject === '수학');
+  if (!math.length) return false;
+  const elem = /초/.test(student.grade || '') || /초(등학교)?$/.test(String(student.school || '').trim());
+  return elem || math.some((c) => /초등|초\s?\d/.test(c.name || ''));
+}
+// 학생별 할인 합계(disc)와 추가 수업료 합계(extra)
+async function adjTotals(db) {
+  const settings = await getSettings(db);
+  const di = new Map(discountItems(settings).map((i) => [i.id, i]));
+  const xi = new Map(extraItems(settings).map((i) => [i.id, i]));
+  const disc = new Map(), extra = new Map();
+  for (const r of await q.all(db, 'SELECT student_id, item_id FROM student_discounts')) {
+    const d = di.get(r.item_id), x = xi.get(r.item_id);
+    if (d) disc.set(r.student_id, (disc.get(r.student_id) || 0) + (Number(d.amount) || 0));
+    if (x) extra.set(r.student_id, (extra.get(r.student_id) || 0) + (Number(x.amount) || 0));
+  }
+  return { disc, extra };
+}
+// 수강료에서 뺄 금액 = 할인 − 추가 수업료 (추가가 더 크면 음수 → 수강료가 늘어나요)
+async function discountTotals(db) {
+  const { disc, extra } = await adjTotals(db);
+  const m = new Map();
+  for (const id of new Set([...disc.keys(), ...extra.keys()])) m.set(id, (disc.get(id) || 0) - (extra.get(id) || 0));
   return m;
 }
 
@@ -402,6 +429,7 @@ route('GET', '/api/students', async ({ db, user, query }) => {
     db,
     `SELECT s.*,
       (SELECT group_concat(c.subject || ' ' || c.name, ', ') FROM enrollments e JOIN courses c ON c.id = e.course_id WHERE e.student_id = s.id AND c.active = 1) AS courses,
+      (SELECT group_concat(c.id) FROM enrollments e JOIN courses c ON c.id = e.course_id WHERE e.student_id = s.id AND c.active = 1) AS course_ids,
       (SELECT COUNT(*) FROM students x WHERE s.family_id IS NOT NULL AND x.family_id = s.family_id AND x.id != s.id) AS sibling_count,
       (SELECT IFNULL(SUM(IFNULL(e.fee, c.fee)), 0) FROM enrollments e JOIN courses c ON c.id = e.course_id WHERE e.student_id = s.id AND c.active = 1) AS fee_month,
       (SELECT IFNULL(SUM(p.amount), 0) FROM payments p WHERE p.student_id = s.id AND p.kind = '교육비' AND p.month = ?) AS tuition_paid,
@@ -414,9 +442,13 @@ route('GET', '/api/students', async ({ db, user, query }) => {
   );
   const view = await viewOf(db, user);
   const disc = view.fees ? await discountTotals(db) : new Map();
+  const xNames = new Map(extraItems(await getSettings(db)).map((i) => [i.id, i.name]));
+  const xOf = new Map();
+  for (const r of await q.all(db, "SELECT student_id, item_id FROM student_discounts WHERE item_id LIKE 'x%'")) if (xNames.has(r.item_id)) xOf.set(r.student_id, [...(xOf.get(r.student_id) || []), xNames.get(r.item_id)]);
   return { month: today().slice(0, 7), students: rows.map((s) => {
     const o = shapeStudent(s, view);
     if (!view.siblings) delete o.sibling_count;
+    if (xOf.has(s.id)) o.extras = xOf.get(s.id);
     if (view.tuition && view.fees) o.tuition = tuitionStatus(Math.max(0, s.fee_month - (disc.get(s.id) || 0)), s.tuition_paid);
     if (view.bookpay) o.book_due = Math.max(0, s.book_total - s.book_paid), o.book_total = s.book_total, o.book_paid = s.book_paid;
     for (const k of ['fee_month', 'tuition_paid']) delete o[k];
@@ -480,7 +512,10 @@ route('GET', '/api/students/:id', async ({ db, user, params }) => {
     const checked = new Set(out.my_discounts.map((x) => x.item_id));
     out.discount_items = discountItems(await getSettings(db)).map((i) => ({ ...i, on: checked.has(i.id) }));
     out.discount_total = out.discount_items.filter((i) => i.on).reduce((a, i) => a + (Number(i.amount) || 0), 0);
-    out.monthly_fee = Math.max(0, out.gross_fee - out.discount_total);
+    out.extra_items = extraItems(await getSettings(db)).map((i) => ({ ...i, on: checked.has(i.id) }));
+    out.extra_eligible = elemMath(raw, out.courses);
+    out.extra_total = out.extra_items.filter((i) => i.on).reduce((a, i) => a + (Number(i.amount) || 0), 0);
+    out.monthly_fee = Math.max(0, out.gross_fee + out.extra_total - out.discount_total);
     delete out.my_discounts;
   }
   if (view.tuition) {
@@ -749,7 +784,72 @@ route('PUT', '/api/students/:id/discounts', async ({ db, body, params }) => {
   if (!(await q.first(db, 'SELECT id FROM students WHERE id = ?', id))) fail(404, '학생을 찾을 수 없어요');
   const valid = new Set(discountItems(await getSettings(db)).map((i) => i.id));
   const ids = [...new Set((body.item_ids || []).map(String))].filter((x) => valid.has(x));
-  await db.batch([db.prepare('DELETE FROM student_discounts WHERE student_id = ?').bind(id), ...ids.map((x) => db.prepare('INSERT INTO student_discounts (student_id, item_id) VALUES (?, ?)').bind(id, x))]);
+  await db.batch([db.prepare("DELETE FROM student_discounts WHERE student_id = ? AND item_id NOT LIKE 'x%'").bind(id), ...ids.map((x) => db.prepare('INSERT INTO student_discounts (student_id, item_id) VALUES (?, ?)').bind(id, x))]);
+  return { ok: true };
+}, OWNER);
+
+// 과목별 등록일·퇴원일 (원장·감독). 퇴원하면서 그 과목 반에서 빼기도 할 수 있어요.
+route('PUT', '/api/students/:id/subjects', async ({ db, body, params }) => {
+  const id = Number(params.id);
+  if (!(await q.first(db, 'SELECT id FROM students WHERE id = ?', id))) fail(404, '학생을 찾을 수 없어요');
+  if (!SUBJECTS.includes(body.subject)) fail(400, '과목을 골라 주세요');
+  const start = isDate(body.start_date) ? body.start_date : null;
+  const end = isDate(body.end_date) ? body.end_date : null;
+  if (start && end && end < start) fail(400, '퇴원일이 등록일보다 빨라요');
+  const stmts = [
+    !start && !end
+      ? db.prepare('DELETE FROM student_subjects WHERE student_id = ? AND subject = ?').bind(id, body.subject)
+      : db.prepare(`INSERT INTO student_subjects (student_id, subject, start_date, end_date) VALUES (?, ?, ?, ?)
+                    ON CONFLICT (student_id, subject) DO UPDATE SET start_date = excluded.start_date, end_date = excluded.end_date`).bind(id, body.subject, start, end),
+  ];
+  if (end && body.remove_from_courses) stmts.push(db.prepare('DELETE FROM enrollments WHERE student_id = ? AND course_id IN (SELECT id FROM courses WHERE subject = ?)').bind(id, body.subject));
+  await db.batch(stmts);
+  return { ok: true };
+}, OM);
+
+// 학생별 수강료 (원장) — 비우면 반 기본 금액을 씁니다
+route('PATCH', '/api/enrollments', async ({ db, body }) => {
+  const e = await q.first(db, 'SELECT * FROM enrollments WHERE course_id = ? AND student_id = ?', Number(body.course_id), Number(body.student_id));
+  if (!e) fail(404, '수강 정보를 찾을 수 없어요');
+  const fee = body.fee === '' || body.fee == null ? null : money(body.fee);
+  await q.run(db, 'UPDATE enrollments SET fee = ? WHERE course_id = ? AND student_id = ?', fee, e.course_id, e.student_id);
+  return { ok: true };
+}, OWNER);
+
+// 교재 배부
+route('POST', '/api/students/:id/books', async ({ db, user, body, params }) => {
+  const id = Number(params.id);
+  await mustSeeStudent(db, user, id);
+  if (!(await viewOf(db, user)).books) fail(403, '교재 배부 내역을 쓸 권한이 없어요');
+  const qty = Math.max(1, Math.min(99, Number(body.qty) || 1));
+  const bk = body.book_id ? await q.first(db, 'SELECT * FROM books WHERE id = ?', Number(body.book_id)) : null;
+  if (body.book_id && !bk) fail(404, '교재를 찾을 수 없어요');
+  const r = await q.run(
+    db,
+    'INSERT INTO book_deliveries (student_id, book_id, date, title, subject, qty, price, memo, given_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    id,
+    bk ? bk.id : null,
+    isDate(body.date) ? body.date : today(),
+    bk ? bk.name : need(body.title, '교재 이름'),
+    SUBJECTS.includes(body.subject) ? body.subject : bk ? bk.subject : null,
+    qty,
+    body.price === '' || body.price == null ? (bk ? bk.sale_price ?? bk.list_price ?? null : null) : money(body.price),
+    clean(body.memo),
+    user.id
+  );
+  return { ok: true, id: r.meta.last_row_id };
+});
+route('PUT', '/api/students/:id/extras', async ({ db, body, params }) => {
+  const id = Number(params.id);
+  if (!(await q.first(db, 'SELECT id FROM students WHERE id = ?', id))) fail(404, '학생을 찾을 수 없어요');
+  const valid = new Set(extraItems(await getSettings(db)).map((i) => i.id));
+  const ids = [...new Set((body.item_ids || []).map(String))].filter((x) => valid.has(x));
+  if (ids.length) {
+    const st = await q.first(db, 'SELECT grade, school FROM students WHERE id = ?', id);
+    const cs = await q.all(db, 'SELECT c.name, c.subject, c.active FROM enrollments e JOIN courses c ON c.id = e.course_id WHERE e.student_id = ?', id);
+    if (!elemMath(st, cs)) fail(400, '사고력수학 같은 추가 수업은 초등부 수학을 듣는 학생만 넣을 수 있어요');
+  }
+  await db.batch([db.prepare("DELETE FROM student_discounts WHERE student_id = ? AND item_id LIKE 'x%'").bind(id), ...ids.map((x) => db.prepare('INSERT INTO student_discounts (student_id, item_id) VALUES (?, ?)').bind(id, x))]);
   return { ok: true };
 }, OWNER);
 
@@ -832,6 +932,303 @@ route('DELETE', '/api/payments/:id', async ({ db, params }) => {
   return { ok: true };
 }, OWNER);
 
+
+
+// ───────── 단체·개별 문자 (원장·감독) ─────────
+// target: selected(고른 학생) / course(반) / school(학교) / all(재원생 전체)
+// to: student(학생) / parent(학부모) / both(둘 다)
+route('POST', '/api/messages/bulk', async ({ db, env, user, body }) => {
+  const target = ['selected', 'course', 'school', 'all'].includes(body.target) ? body.target : fail(400, '보낼 대상을 골라 주세요');
+  const to = ['student', 'parent', 'both'].includes(body.to) ? body.to : fail(400, '받는 사람을 골라 주세요');
+  const text = String(body.text || '').trim();
+  if (!body.preview && !text) fail(400, '보낼 내용을 적어 주세요');
+  if (text.length > 1500) fail(400, '문자 내용이 너무 길어요 (1500자까지)');
+  let rows;
+  const cols = 'SELECT s.id, s.name, s.school, s.grade, s.student_phone, s.father_phone, s.mother_phone, s.sms_target FROM students s';
+  if (target === 'selected') {
+    const ids = (Array.isArray(body.ids) ? body.ids : []).map(Number).filter(Boolean).slice(0, 1000);
+    if (!ids.length) fail(400, '학생을 먼저 골라 주세요');
+    rows = await q.all(db, `${cols} WHERE s.id IN (${ids.map(() => '?').join(',')})`, ...ids);
+  } else if (target === 'course') {
+    rows = await q.all(db, `${cols} JOIN enrollments e ON e.student_id = s.id WHERE e.course_id = ? AND s.status = '재원'`, Number(body.course_id) || 0);
+  } else if (target === 'school') {
+    if (!clean(body.school)) fail(400, '학교를 골라 주세요');
+    rows = await q.all(db, `${cols} WHERE s.school = ? AND s.status = '재원'${clean(body.grade) ? ' AND s.grade = ?' : ''}`, clean(body.school), ...(clean(body.grade) ? [clean(body.grade)] : []));
+  } else rows = await q.all(db, `${cols} WHERE s.status = '재원'`);
+  const settings = await getSettings(db);
+  const kind = target === 'selected' && rows.length === 1 ? (to === 'student' ? '학생 문자' : '학부모 문자') : '단체 문자';
+  const msgs = [];
+  let noPhone = 0;
+  for (const st of rows) {
+    const nums = [];
+    if (to !== 'parent') { if (st.student_phone) nums.push(st.student_phone); }
+    if (to !== 'student') nums.push(...recipients(st));
+    const uniq = [...new Set(nums.filter(Boolean))];
+    if (!uniq.length) { noPhone++; continue; }
+    const t = fillTemplate(text, { 학생: st.name, 학원: settings.academy_name, 학교: st.school || '', 학년: st.grade || '' });
+    for (const n of uniq) msgs.push({ kind, student_id: st.id, to: n, text: t });
+  }
+  const out = { students: rows.length, messages: msgs.length, no_phone: noPhone, names: rows.slice(0, 30).map((r) => r.name), send_mode: settings.send_mode };
+  if (body.preview) return { ...out, sample: msgs[0] ? msgs[0].text : fillTemplate(text, { 학생: '홍길동', 학원: settings.academy_name }) };
+  if (!msgs.length) fail(400, '보낼 수 있는 번호가 없어요');
+  const results = [];
+  for (let i = 0; i < msgs.length; i += 40) results.push(...(await sendMessages(env, db, settings, user.id, msgs.slice(i, i + 40))));
+  return { ...out, ok: true, sent: results.filter((r) => r.status !== '실패').length, failed: results.filter((r) => r.status === '실패').length };
+}, OM);
+
+// ───────── 원장 전용: 매출·비용·선생님별 수익률 (보안 영역) ─────────
+// 지키는 겹:
+//  1) 원장 계정 로그인  2) 원장님이 등록한 기기에서만  3) 매출 비밀번호(PIN) — 15분 뒤 자동 잠금
+//  4) PIN 5번 틀리면 30분 잠금  5) 등록 안 된 기기에서 들어오면 기록하고 원장님께 알림(대시보드 + 문자)
+const FIN_MIN = 15;
+async function sha256(text) {
+  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+const secGet = async (db, k) => (await q.first(db, 'SELECT v FROM finance_secure WHERE k = ?', k))?.v ?? null;
+const secSet = (db, k, v) => q.run(db, 'INSERT INTO finance_secure (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v', k, v == null ? null : String(v));
+function reqInfo(request) {
+  return { ip: request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || '', ua: (request.headers.get('user-agent') || '').slice(0, 300) };
+}
+function deviceName(ua) {
+  const os = /iPhone/.test(ua) ? '아이폰' : /iPad/.test(ua) ? '아이패드' : /Android/.test(ua) ? '안드로이드' : /Windows/.test(ua) ? '윈도우 PC' : /Mac/.test(ua) ? '맥' : '알 수 없는 기기';
+  const br = /Edg\//.test(ua) ? '엣지' : /SamsungBrowser/.test(ua) ? '삼성 인터넷' : /CriOS|Chrome\//.test(ua) ? '크롬' : /Safari\//.test(ua) ? '사파리' : '';
+  return `${os}${br ? ' · ' + br : ''}`;
+}
+async function securityAlert(db, env, request, user, kind, detail, devTok) {
+  const { ip, ua } = reqInfo(request);
+  const hint = devTok ? (await sha256(devTok)).slice(0, 8) : 'none';
+  // 같은 기기·같은 일은 1시간에 한 번만 알려요 (기록은 매번 남겨요)
+  const recent = await q.first(db, `SELECT id FROM security_events WHERE kind = ? AND device_hint = ? AND created_at > datetime('now', '-1 hour')`, kind, hint);
+  await q.run(db, 'INSERT INTO security_events (kind, detail, ip, user_agent, device_hint, user_id) VALUES (?, ?, ?, ?, ?, ?)', kind, detail, ip, ua, hint, user ? user.id : null);
+  if (recent) return;
+  const phone = await secGet(db, 'alert_phone');
+  if (!phone) return;
+  const settings = await getSettings(db);
+  const when = new Date(Date.now() + 9 * 3600e3).toISOString().slice(5, 16).replace('T', ' ');
+  await sendMessages(env, db, settings, null, [{ kind: '보안 알림', to: phone, text: `[${settings.academy_name} 보안] ${kind}\n${when} · ${deviceName(ua)}${ip ? ` · IP ${ip}` : ''}\n본인이 아니면 바로 비밀번호를 바꿔 주세요.` }]);
+}
+async function trustedDevice(db, user, request) {
+  const tok = request.headers.get('x-device') || '';
+  if (!/^[a-f0-9]{64}$/.test(tok)) return { tok: '', dev: null };
+  const dev = await q.first(db, 'SELECT * FROM trusted_devices WHERE token_hash = ? AND user_id = ?', await sha256(tok), user.id);
+  return { tok, dev };
+}
+async function mustFinance(ctx) {
+  const { db, env, user, request } = ctx;
+  if (user.role !== 'owner') {
+    await securityAlert(db, env, request, user, '원장이 아닌 계정이 매출 화면에 접근 시도', user.name, request.headers.get('x-device'));
+    fail(403, '원장님만 볼 수 있어요');
+  }
+  const { tok, dev } = await trustedDevice(db, user, request);
+  if (!dev) {
+    await securityAlert(db, env, request, user, '등록 안 된 기기에서 매출 화면 접근 시도', '', tok);
+    fail(403, '등록된 기기에서만 볼 수 있어요');
+  }
+  const ft = request.headers.get('x-finance') || '';
+  const fs = /^[a-f0-9]{64}$/.test(ft) ? await q.first(db, `SELECT * FROM finance_sessions WHERE token_hash = ? AND user_id = ? AND device_id = ? AND expires_at > datetime('now')`, await sha256(ft), user.id, dev.id) : null;
+  if (!fs) fail(428, '매출 비밀번호를 다시 넣어 주세요 (15분이 지나면 자동으로 잠겨요)');
+  return dev;
+}
+async function pinLocked(db) {
+  const until = await secGet(db, 'lock_until');
+  return until && until > new Date().toISOString() ? until : null;
+}
+async function checkPin(ctx, pin) {
+  const { db, env, user, request } = ctx;
+  const locked = await pinLocked(db);
+  if (locked) fail(423, `비밀번호를 여러 번 틀려서 잠겨 있어요. ${new Date(new Date(locked).getTime() + 9 * 3600e3).toISOString().slice(11, 16)} 이후에 다시 해 주세요`);
+  const hash = await secGet(db, 'pin_hash');
+  if (hash && (await verifyPassword(String(pin || ''), hash))) { await secSet(db, 'fails', 0); return true; }
+  const fails = Number((await secGet(db, 'fails')) || 0) + 1;
+  await secSet(db, 'fails', fails);
+  if (fails >= 5) {
+    await secSet(db, 'lock_until', new Date(Date.now() + 30 * 60e3).toISOString());
+    await secSet(db, 'fails', 0);
+    await securityAlert(db, env, request, user, '매출 비밀번호 5번 틀려서 30분 잠금', '', request.headers.get('x-device'));
+    fail(423, '매출 비밀번호를 5번 틀려서 30분 동안 잠겼어요');
+  }
+  fail(400, `매출 비밀번호가 맞지 않아요 (${fails}/5)`);
+}
+const validPin = (p) => /^\d{6}$/.test(String(p || ''));
+
+route('GET', '/api/finance/status', async ({ db, env, user, request }) => {
+  if (user.role !== 'owner') return { owner: false };
+  const { tok, dev } = await trustedDevice(db, user, request);
+  const count = (await q.first(db, 'SELECT COUNT(*) AS n FROM trusted_devices WHERE user_id = ?', user.id)).n;
+  if (!dev && count) await securityAlert(db, env, request, user, '등록 안 된 기기에서 매출 화면을 열었어요', '', tok);
+  return { owner: true, pin_set: !!(await secGet(db, 'pin_hash')), device_ok: !!dev, device_name: dev ? dev.name : null, devices: count, locked: await pinLocked(db), alert_phone_set: !!(await secGet(db, 'alert_phone')), suggest_name: deviceName(reqInfo(request).ua) };
+});
+// 이 기기 등록: 원장 로그인 비밀번호 + 매출 비밀번호(처음이면 새로 정해요). 등록되면 알림을 보내요.
+route('POST', '/api/finance/devices', async (ctx) => {
+  const { db, env, user, request, body } = ctx;
+  const tok = request.headers.get('x-device') || '';
+  if (!/^[a-f0-9]{64}$/.test(tok)) fail(400, '이 기기 정보를 읽지 못했어요. 새로고침 후 다시 해 주세요');
+  const me = await q.first(db, 'SELECT password_hash FROM users WHERE id = ?', user.id);
+  if (!(await verifyPassword(String(body.password || ''), me.password_hash))) {
+    await securityAlert(db, env, request, user, '기기 등록 중 로그인 비밀번호 틀림', '', tok);
+    fail(400, '로그인 비밀번호가 맞지 않아요');
+  }
+  const firstTime = !(await secGet(db, 'pin_hash'));
+  if (firstTime) {
+    if (!validPin(body.pin)) fail(400, '매출 비밀번호는 숫자 6자리로 정해 주세요');
+    if (/^(\d)\1{5}$/.test(body.pin) || ['123456', '654321', '012345'].includes(body.pin)) fail(400, '너무 쉬운 번호예요. 다른 6자리로 정해 주세요');
+    await secSet(db, 'pin_hash', await hashPassword(body.pin));
+  } else await checkPin(ctx, body.pin);
+  const th = await sha256(tok);
+  const name = clean(body.name) || deviceName(reqInfo(request).ua);
+  await q.run(db, `INSERT INTO trusted_devices (user_id, name, token_hash, user_agent) VALUES (?, ?, ?, ?) ON CONFLICT (token_hash) DO UPDATE SET name = excluded.name`, user.id, name.slice(0, 40), th, reqInfo(request).ua);
+  if (clean(body.alert_phone)) await secSet(db, 'alert_phone', clean(body.alert_phone).replace(/[^\d]/g, ''));
+  const count = (await q.first(db, 'SELECT COUNT(*) AS n FROM trusted_devices WHERE user_id = ?', user.id)).n;
+  if (count > 1) await securityAlert(db, env, request, user, `새 기기가 매출 화면에 등록됐어요 (${name})`, '', tok);
+  return { ok: true, first_time: firstTime };
+}, OWNER);
+// 잠금 풀기 → 15분짜리 열쇠
+route('POST', '/api/finance/unlock', async (ctx) => {
+  const { db, env, user, request, body } = ctx;
+  const { tok, dev } = await trustedDevice(db, user, request);
+  if (!dev) { await securityAlert(db, env, request, user, '등록 안 된 기기에서 매출 비밀번호 입력 시도', '', tok); fail(403, '등록된 기기에서만 열 수 있어요'); }
+  await checkPin(ctx, body.pin);
+  const ft = newToken();
+  await q.run(db, `DELETE FROM finance_sessions WHERE expires_at < datetime('now') OR user_id = ?`, user.id);
+  await q.run(db, `INSERT INTO finance_sessions (token_hash, user_id, device_id, expires_at) VALUES (?, ?, ?, datetime('now', '+${FIN_MIN} minutes'))`, await sha256(ft), user.id, dev.id);
+  await q.run(db, `UPDATE trusted_devices SET last_used = datetime('now') WHERE id = ?`, dev.id);
+  return { ok: true, token: ft, minutes: FIN_MIN };
+}, OWNER);
+route('POST', '/api/finance/lock', async ({ db, user }) => {
+  await q.run(db, 'DELETE FROM finance_sessions WHERE user_id = ?', user.id);
+  return { ok: true };
+}, OWNER);
+// 원장님 대시보드에 띄울 보안 알림 (내용 없이 건수와 종류만)
+route('GET', '/api/security/alerts', async ({ db }) => {
+  const rows = await q.all(db, `SELECT id, kind, created_at, user_agent, ip FROM security_events WHERE seen = 0 ORDER BY id DESC LIMIT 20`);
+  return { count: rows.length, events: rows.map((r) => ({ id: r.id, kind: r.kind, created_at: r.created_at, device: deviceName(r.user_agent || ''), ip: r.ip })) };
+}, OWNER);
+route('POST', '/api/security/alerts/seen', async ({ db }) => {
+  await q.run(db, 'UPDATE security_events SET seen = 1 WHERE seen = 0');
+  return { ok: true };
+}, OWNER);
+
+route('GET', '/api/finance/security', async (ctx) => {
+  await mustFinance(ctx);
+  const { db, user } = ctx;
+  return {
+    devices: await q.all(db, 'SELECT id, name, created_at, last_used FROM trusted_devices WHERE user_id = ? ORDER BY id', user.id),
+    events: (await q.all(db, 'SELECT id, kind, ip, user_agent, created_at, seen FROM security_events ORDER BY id DESC LIMIT 100')).map((r) => ({ ...r, device: deviceName(r.user_agent || '') })),
+    alert_phone: await secGet(db, 'alert_phone'),
+  };
+});
+route('DELETE', '/api/finance/devices/:id', async (ctx) => {
+  const dev = await mustFinance(ctx);
+  const id = Number(ctx.params.id);
+  if (id === dev.id) fail(400, '지금 쓰는 기기는 지울 수 없어요. 다른 등록 기기에서 지워 주세요');
+  await q.run(ctx.db, 'DELETE FROM trusted_devices WHERE id = ? AND user_id = ?', id, ctx.user.id);
+  await q.run(ctx.db, 'DELETE FROM finance_sessions WHERE device_id = ?', id);
+  return { ok: true };
+});
+route('PUT', '/api/finance/security', async (ctx) => {
+  await mustFinance(ctx);
+  const { db, body } = ctx;
+  if ('alert_phone' in body) await secSet(db, 'alert_phone', String(body.alert_phone || '').replace(/[^\d]/g, '') || null);
+  if (body.new_pin) {
+    if (!validPin(body.new_pin)) fail(400, '매출 비밀번호는 숫자 6자리예요');
+    await checkPin(ctx, body.old_pin);
+    await secSet(db, 'pin_hash', await hashPassword(body.new_pin));
+  }
+  return { ok: true };
+});
+
+// 비용
+const EXPENSE_CATS = ['강사 급여', '강사 수당', '임대료', '관리비·공과금', '교재 구입', '광고·홍보', '차량', '간식·소모품', '세금·보험', '기타'];
+route('POST', '/api/finance/expenses', async (ctx) => {
+  await mustFinance(ctx);
+  const { db, body } = ctx;
+  const month = /^\d{4}-\d{2}$/.test(body.month || '') ? body.month : fail(400, '몇 월 비용인지 골라 주세요');
+  const amount = Number(String(body.amount ?? '').replace(/[^\d]/g, ''));
+  if (!amount) fail(400, '금액을 적어 주세요');
+  const cat = EXPENSE_CATS.includes(body.category) ? body.category : '기타';
+  const r = await q.run(db, 'INSERT INTO expenses (month, category, amount, teacher_id, memo) VALUES (?, ?, ?, ?, ?)', month, cat, amount, Number(body.teacher_id) || null, clean(body.memo));
+  return { ok: true, id: r.meta.last_row_id };
+});
+route('DELETE', '/api/finance/expenses/:id', async (ctx) => {
+  await mustFinance(ctx);
+  await q.run(ctx.db, 'DELETE FROM expenses WHERE id = ?', Number(ctx.params.id));
+  return { ok: true };
+});
+// 지난달 비용 그대로 가져오기 (월세·급여처럼 매달 같은 것)
+route('POST', '/api/finance/expenses/copy', async (ctx) => {
+  await mustFinance(ctx);
+  const { db, body } = ctx;
+  const month = /^\d{4}-\d{2}$/.test(body.month || '') ? body.month : fail(400, '달을 골라 주세요');
+  const [y, m] = month.split('-').map(Number);
+  const prev = `${m === 1 ? y - 1 : y}-${String(m === 1 ? 12 : m - 1).padStart(2, '0')}`;
+  const rows = await q.all(db, 'SELECT * FROM expenses WHERE month = ?', prev);
+  if (!rows.length) fail(400, '지난달 비용이 없어요');
+  await db.batch(rows.map((r) => db.prepare('INSERT INTO expenses (month, category, amount, teacher_id, memo) VALUES (?, ?, ?, ?, ?)').bind(month, r.category, r.amount, r.teacher_id, r.memo)));
+  return { ok: true, count: rows.length };
+});
+
+// 월 요약: 교육비(청구·수납), 교재(배부·수납), 비용, 선생님별 매출·비용·순이익
+route('GET', '/api/finance/summary', async (ctx) => {
+  await mustFinance(ctx);
+  const { db, query } = ctx;
+  const month = /^\d{4}-\d{2}$/.test(query.month || '') ? query.month : today().slice(0, 7);
+  const ym = `${month}%`;
+  const teachers = await q.all(db, `SELECT id, name, photo_v, staff_role, role FROM users WHERE role IN ('owner', 'teacher') ORDER BY role = 'owner' DESC, active DESC, name`);
+  // 학생별 반 수강료 (반별 담당 선생님에게 나눠 담아요)
+  const enr = await q.all(db, `SELECT e.student_id, c.id AS course_id, c.name AS course_name, c.subject, c.teacher_id, IFNULL(e.fee, c.fee) AS fee
+    FROM enrollments e JOIN courses c ON c.id = e.course_id JOIN students s ON s.id = e.student_id WHERE c.active = 1 AND s.status = '재원'`);
+  const disc = await discountTotals(db);
+  const paid = new Map((await q.all(db, `SELECT student_id, SUM(amount) AS a FROM payments WHERE kind = '교육비' AND month = ? GROUP BY student_id`, month)).map((r) => [r.student_id, r.a]));
+  const byStudent = new Map();
+  for (const e of enr) { if (!byStudent.has(e.student_id)) byStudent.set(e.student_id, []); byStudent.get(e.student_id).push(e); }
+  const T = new Map();
+  const tget = (id) => { if (!T.has(id)) T.set(id, { teacher_id: id, billed: 0, received: 0, students: new Set(), courses: new Set(), cost: 0 }); return T.get(id); };
+  let billedAll = 0;
+  for (const [sid, list] of byStudent) {
+    const gross = list.reduce((a, x) => a + (x.fee || 0), 0);
+    const net = Math.max(0, gross - (disc.get(sid) || 0));
+    const got = Math.min(paid.get(sid) || 0, net || (paid.get(sid) || 0));
+    billedAll += net;
+    for (const x of list) {
+      const share = gross ? (x.fee || 0) / gross : 1 / list.length;
+      const t = tget(x.teacher_id || 0);
+      t.billed += net * share; t.received += got * share; t.students.add(sid); t.courses.add(x.course_id);
+    }
+  }
+  const tuitionReceived = (await q.first(db, `SELECT IFNULL(SUM(amount), 0) AS a FROM payments WHERE kind = '교육비' AND month = ?`, month)).a;
+  const bookGiven = await q.first(db, `SELECT IFNULL(SUM(IFNULL(price, 0) * qty), 0) AS a, IFNULL(SUM(qty), 0) AS n FROM book_deliveries WHERE date LIKE ?`, ym);
+  const bookReceived = (await q.first(db, `SELECT IFNULL(SUM(amount), 0) AS a FROM payments WHERE kind = '교재비' AND paid_date LIKE ?`, ym)).a;
+  const expenses = await q.all(db, `SELECT x.*, u.name AS teacher_name FROM expenses x LEFT JOIN users u ON u.id = x.teacher_id WHERE x.month = ? ORDER BY x.teacher_id IS NULL, x.category, x.id`, month);
+  for (const x of expenses) if (x.teacher_id) tget(x.teacher_id).cost += x.amount;
+  const totalCost = expenses.reduce((a, x) => a + x.amount, 0);
+  const teacherCost = expenses.filter((x) => x.teacher_id).reduce((a, x) => a + x.amount, 0);
+  const revenue = tuitionReceived + bookReceived;
+  const tn = new Map(teachers.map((t) => [t.id, t]));
+  const rows = [...T.values()].map((t) => {
+    const received = Math.round(t.received), billed = Math.round(t.billed);
+    const profit = received - t.cost;
+    return { teacher_id: t.teacher_id || null, name: t.teacher_id ? (tn.get(t.teacher_id) || {}).name || '(지운 선생님)' : '담당 없음', photo_v: (tn.get(t.teacher_id) || {}).photo_v || null,
+      courses: t.courses.size, students: t.students.size, billed, received, unpaid: Math.max(0, billed - received), cost: t.cost, profit,
+      margin: received ? Math.round((profit / received) * 1000) / 10 : null, share: tuitionReceived ? Math.round((received / tuitionReceived) * 1000) / 10 : 0 };
+  }).sort((a, b) => b.profit - a.profit);
+  for (const t of teachers) if (!rows.some((r) => r.teacher_id === t.id) && expenses.some((x) => x.teacher_id === t.id)) {/* 비용만 있는 선생님은 위에서 이미 들어가요 */}
+  // 최근 6개월 흐름
+  const months = [];
+  for (let i = 5; i >= 0; i--) { const [y, m] = month.split('-').map(Number); const d = new Date(Date.UTC(y, m - 1 - i, 1)); months.push(d.toISOString().slice(0, 7)); }
+  const trend = [];
+  for (const mo of months) {
+    const tu = (await q.first(db, `SELECT IFNULL(SUM(amount), 0) AS a FROM payments WHERE kind = '교육비' AND month = ?`, mo)).a;
+    const bk = (await q.first(db, `SELECT IFNULL(SUM(amount), 0) AS a FROM payments WHERE kind = '교재비' AND paid_date LIKE ?`, `${mo}%`)).a;
+    const co = (await q.first(db, `SELECT IFNULL(SUM(amount), 0) AS a FROM expenses WHERE month = ?`, mo)).a;
+    trend.push({ month: mo, revenue: tu + bk, cost: co, profit: tu + bk - co });
+  }
+  return {
+    month, categories: EXPENSE_CATS, teachers: teachers.map((t) => ({ id: t.id, name: t.role === 'owner' ? `${t.name} (원장)` : t.name })),
+    totals: { tuition_billed: Math.round(billedAll), tuition_received: tuitionReceived, tuition_unpaid: Math.max(0, Math.round(billedAll) - tuitionReceived), book_given: bookGiven.a, book_qty: bookGiven.n, book_received: bookReceived, revenue, cost: totalCost, teacher_cost: teacherCost, common_cost: totalCost - teacherCost, profit: revenue - totalCost, margin: revenue ? Math.round(((revenue - totalCost) / revenue) * 1000) / 10 : null },
+    by_teacher: rows, expenses, trend,
+  };
+});
 
 // ───────── 오늘 할 일 ─────────
 // 학원 업무(원장이 정함): 담당자 한 명 또는 모든 선생님. 보고가 필요한 업무는 완료할 때 보고를 남기고, 원장이 확인해요.
@@ -1453,19 +1850,19 @@ async function billRows(db, month, kind = 'all') {
      FROM students s WHERE s.status = '재원' ORDER BY s.name`,
     month, `${month}-01`
   );
-  const disc = await discountTotals(db);
+  const { disc: discOnly, extra: extraOnly } = await adjTotals(db);
   const last = new Map((await q.all(db, `SELECT student_id, MAX(id) AS id FROM bills WHERE month = ? AND IFNULL(kind, 'all') = ? GROUP BY student_id`, month, kind)).map((r) => [r.student_id, r.id]));
   const lastBills = last.size ? new Map((await q.all(db, `SELECT * FROM bills WHERE id IN (${[...last.values()].join(',')})`)).map((b) => [b.student_id, b])) : new Map();
   const counts = new Map((await q.all(db, `SELECT student_id, COUNT(*) AS n FROM bills WHERE month = ? AND IFNULL(kind, 'all') = ? GROUP BY student_id`, month, kind)).map((r) => [r.student_id, r.n]));
   return rows.map((r) => {
-    const discount = disc.get(r.id) || 0;
-    const fee = Math.max(0, r.gross - discount);
+    const discount = discOnly.get(r.id) || 0, extra = extraOnly.get(r.id) || 0;
+    const fee = Math.max(0, r.gross + extra - discount);
     const tuition_due = Math.max(0, fee - r.paid);
     const book_due = Math.max(0, r.book_total - r.book_paid);
     const b = lastBills.get(r.id);
     return {
       id: r.id, name: r.name, school: r.school, grade: r.grade, photo_v: r.photo_v, has_phone: recipients(r).length > 0,
-      gross: r.gross, discount, fee, paid: r.paid, tuition_due, book_due, recent_books: r.recent_books,
+      gross: r.gross, discount, extra, fee, paid: r.paid, tuition_due, book_due, recent_books: r.recent_books,
       total: kind === 'tuition' ? tuition_due : kind === 'book' ? book_due : tuition_due + book_due,
       last_bill: b ? { sent_at: b.sent_at, total: b.total, status: b.status } : null,
       bill_count: counts.get(r.id) || 0,
@@ -1494,7 +1891,7 @@ route('POST', '/api/bills/send', async ({ db, env, user, body }) => {
   for (const t of targets) {
     const lines = [];
     const useT = kind !== 'book' && t.tuition_due > 0, useB = kind !== 'tuition' && t.book_due > 0;
-    if (useT) lines.push(`· ${mm}월 교육비 ${t.tuition_due.toLocaleString('ko-KR')}원${t.discount ? ` (할인 ${t.discount.toLocaleString('ko-KR')}원 적용)` : ''}${t.paid ? ` (이미 ${t.paid.toLocaleString('ko-KR')}원 납부)` : ''}`);
+    if (useT) lines.push(`· ${mm}월 교육비 ${t.tuition_due.toLocaleString('ko-KR')}원${t.discount ? ` (할인 ${t.discount.toLocaleString('ko-KR')}원 적용)` : ''}${t.extra ? ` (추가 수업 ${t.extra.toLocaleString('ko-KR')}원 포함)` : ''}${t.paid ? ` (이미 ${t.paid.toLocaleString('ko-KR')}원 납부)` : ''}`);
     if (useB) lines.push(`· 교재비 ${t.book_due.toLocaleString('ko-KR')}원${t.recent_books ? ` (${t.recent_books})` : ''}`);
     const tpl = kind === 'tuition' ? settings.tpl_bill_tuition : kind === 'book' ? settings.tpl_bill_book : settings.tpl_bill;
     const text = fillTemplate(tpl, { 학원: settings.academy_name, 학생: t.name, 월: mm, 내역: lines.join('\n'), 합계: `${t.total.toLocaleString('ko-KR')}원`, 계좌: accountText(settings, useT, useB) });
@@ -2391,7 +2788,7 @@ route('GET', '/api/settings', async ({ db, env, user }) => {
   const s = await getSettings(db);
   const view = await viewOf(db, { role: 'teacher' });
   if (user.role !== 'owner') return { academy_name: s.academy_name, mottos: parseMottos(s), teacher_view: view };
-  return { ...s, mottos: parseMottos(s), teacher_view: view, teacher_view_labels: TEACHER_VIEW_LABELS, solapi_ready: solapiReady(env), discount_items: discountItems(s), book_suppliers: suppliersOf(s), log_remind: remindSettings(s), word_books: wordBooks(s) };
+  return { ...s, mottos: parseMottos(s), teacher_view: view, teacher_view_labels: TEACHER_VIEW_LABELS, solapi_ready: solapiReady(env), discount_items: discountItems(s), extra_items: extraItems(s), book_suppliers: suppliersOf(s), log_remind: remindSettings(s), word_books: wordBooks(s) };
 });
 
 route('PUT', '/api/settings', async ({ db, env, body }) => {
@@ -2412,9 +2809,15 @@ route('PUT', '/api/settings', async ({ db, env, body }) => {
   if ('tpl_word_retest' in body) set.push(['tpl_word_retest', need(body.tpl_word_retest, '재시험 안내 문자 문구')]);
   if ('discount_items' in body) {
     const items = (body.discount_items || [])
-      .map((x, i) => ({ id: clean(x.id) || `d${Date.now().toString(36)}${i}`, name: clean(x.name), amount: money(x.amount) }))
+      .map((x, i) => ({ id: clean(x.id) && !/^x/.test(clean(x.id)) ? clean(x.id) : `d${Date.now().toString(36)}${i}`, name: clean(x.name), amount: money(x.amount) }))
       .filter((x) => x.name);
     set.push(['discount_items', JSON.stringify(items)]);
+  }
+  if ('extra_items' in body) {
+    const items = (body.extra_items || [])
+      .map((x, i) => ({ id: /^x/.test(clean(x.id) || '') ? clean(x.id) : `x${Date.now().toString(36)}${i}`, name: clean(x.name), amount: money(x.amount) }))
+      .filter((x) => x.name);
+    set.push(['extra_items', JSON.stringify(items)]);
   }
   if ('book_suppliers' in body) set.push(['book_suppliers', JSON.stringify((body.book_suppliers || []).map(clean).filter(Boolean))]);
   if ('bank_account' in body) set.push(['bank_account', clean(body.bank_account) || '']);

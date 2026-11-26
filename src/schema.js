@@ -310,6 +310,46 @@ export const SCHEMA = [
     checked_at TEXT,
     UNIQUE (task_id, user_id, date)
   )`,
+  // ── 원장 전용 매출·비용 (보안 영역)
+  `CREATE TABLE IF NOT EXISTS expenses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    month TEXT NOT NULL,
+    category TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    teacher_id INTEGER,
+    memo TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS trusted_devices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    user_agent TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS finance_sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    device_id INTEGER NOT NULL,
+    expires_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS finance_secure (
+    k TEXT PRIMARY KEY,
+    v TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS security_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    detail TEXT,
+    ip TEXT,
+    user_agent TEXT,
+    device_hint TEXT,
+    user_id INTEGER,
+    seen INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
   `CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -330,6 +370,8 @@ export const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_pay_student ON payments (student_id, kind)`,
   `CREATE INDEX IF NOT EXISTS idx_students_family ON students (family_id)`,
   `CREATE INDEX IF NOT EXISTS idx_task_done ON task_done (user_id, date)`,
+  `CREATE INDEX IF NOT EXISTS idx_expenses_month ON expenses (month)`,
+  `CREATE INDEX IF NOT EXISTS idx_sec_events ON security_events (seen, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_task_report ON task_done (report_status)`,
 ];
 
@@ -350,6 +392,11 @@ export const DEFAULT_SETTINGS = {
     { id: 'd3', name: '3과목수강할인', amount: 50000 },
     { id: 'd4', name: '가족할인', amount: 10000 },
     { id: 'd5', name: '가족할인', amount: 30000 },
+  ]),
+  // 추가 수업료 항목 (교육비에 더해져요 · 설정에서 바꿀 수 있어요)
+  extra_items: JSON.stringify([
+    { id: 'x1', name: '사고력수학 1회', amount: 40000 },
+    { id: 'x2', name: '사고력수학 2회', amount: 80000 },
   ]),
   book_suppliers: JSON.stringify(['샘터서점', '대한서정', '러닝북스', '조이매스', '인터넷 총판']),
   // 수업 일지 알림: 수업이 끝나고 after_min 분이 지나도 일지가 없으면 알림

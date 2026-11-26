@@ -216,7 +216,7 @@
   // ───────── 메뉴 ─────────
   const NAV = [
     { group: null, items: [['', '🏠', '대시보드']] },
-    { group: '원장 전용', owner: true, items: [['teachers', '👥', '선생님 계정'], ['courses', '🗂️', '반 관리'], ['periods', '🗓️', '피드백 기간'], ['bills', '🧾', '청구서 보내기'], ['payimport', '💳', '결제·입금 대조'], ['settings', '⚙️', '설정']] },
+    { group: '원장 전용', owner: true, items: [['teachers', '👥', '선생님 계정'], ['courses', '🗂️', '반 관리'], ['periods', '🗓️', '피드백 기간'], ['bills', '🧾', '청구서 보내기'], ['payimport', '💳', '결제·입금 대조'], ['finance', '💰', '매출·수익 🔒'], ['settings', '⚙️', '설정']] },
     { group: '학생 관리', items: [['attendance', '✅', '출결·수업 일지'], ['word', '📝', '단어시험 채점'], ['logs', '📒', '일지 모아 보기'], ['progress', '📈', '진도표'], ['feedback', '📝', '피드백 작성'], ['risks', '🚨', '이탈 신호 관리'], ['messages', '📨', '피드백·문자 발송 기록'], ['consultations', '💬', '상담 정리']] },
     { group: '기본 정보', items: [['students', '🎒', '학생 명부'], ['books', '📚', '교재 관리'], ['courses', '🗂️', '반 학생 넣기', 'manager']] },
   ];
@@ -277,6 +277,7 @@
     if (!state.me) return;
     const { parts, query } = parseHash();
     const key = SCORE ? 'word' : parts[0] || '';
+    if (key !== 'finance') finLock(false); // 매출 화면을 떠나면 바로 잠가요
     $$('[data-nav]').forEach((a) => a.classList.toggle('on', a.dataset.nav === key));
     if (!SCORE) $('#shell').classList.remove('menu-open');
     const main = $('#main');
@@ -289,11 +290,30 @@
     window.scrollTo(0, 0);
     try {
       await page.render(main, parts.slice(1), query);
+      addXlsButton(main, key);
     } catch (e) {
       main.innerHTML = errBox(e);
     }
   }
   const reload = () => router();
+  // 표가 있는 화면에는 언제나 [⬇ 엑셀] 버튼을 달아요 (학생 명부·매출은 따로 있어요)
+  const XLS_TITLES = { attendance: '출결', logs: '일지모아보기', progress: '진도표', messages: '문자발송기록', consultations: '상담', books: '교재', bills: '청구서', courses: '반', teachers: '선생님', risks: '이탈신호', payimport: '입금대조', feedback: '피드백' };
+  function addXlsButton(main, key) {
+    if (SCORE || key === 'students' || key === 'finance' || key === '' || $('#xlsBtn', main)) return;
+    const head = $('.page-head', main);
+    if (!head) return;
+    const btn = document.createElement('button');
+    btn.className = 'btn'; btn.id = 'xlsBtn'; btn.textContent = '⬇ 엑셀';
+    btn.onclick = () => {
+      const tables = $$('table.list', main).filter((t) => t.offsetParent !== null);
+      if (!tables.length) return toast('내려받을 표가 없어요');
+      const title = XLS_TITLES[key] || (($('h1', head) || {}).textContent || '목록').trim();
+      downloadXlsx(`${title}_${todayStr()}.xlsx`, tables.map((t, i) => ({ name: tables.length > 1 ? `${title} ${i + 1}` : title, rows: tableToRows(t) })));
+    };
+    const box = head.querySelector(':scope > .row') || head;
+    box.appendChild(btn);
+  }
+
 
   // ───────── 대시보드 ─────────
   // ───────── 오늘 할 일 (대시보드) ─────────
@@ -363,8 +383,11 @@
     const left = d.mine.filter((t) => !t.done).length;
     const reports = d.reports || [];
     const checkedNew = d.mine.filter((t) => t.done && t.done.report_status === 'checked' && t.done.checked_at && t.done_date === d.date);
+    const sec = owner ? await api('GET', '/api/security/alerts').catch(() => ({ count: 0, events: [] })) : { count: 0, events: [] };
     const rts = await api('GET', '/api/word/retests').then((r) => r.retests.filter((t) => t.retest_at && t.retest_at.slice(0, 10) <= d.date)).catch(() => []);
     box.innerHTML = `
+      ${sec.count ? `<div class="banner" style="background:#fde3e1;border-color:#f3b0aa;color:#7a1a12;margin-bottom:14px">🚨 <b>보안 알림 ${sec.count}건</b> — ${sec.events.slice(0, 3).map((e) => `${prettyTime(e.created_at)} ${h(e.kind)} (${h(e.device)})`).join(' · ')}
+        <div class="small" style="margin-top:4px">원장님이 아니라면 <b>내 정보에서 로그인 비밀번호</b>와 <b>매출 비밀번호</b>를 바로 바꿔 주세요. <button class="btn sm" id="secSeen" style="margin-left:6px">확인했어요</button></div></div>` : ''}
       ${rts.length ? `<div class="card" style="margin-bottom:14px"><div class="row"><h2 style="margin:0">🔤 오늘 영어 재시험 ${rts.length}명</h2><span class="space"></span><a class="btn sm" href="#/word">재시험 일정 전체 보기</a></div>${retestBoard(rts, true)}</div>` : ''}
       ${reports.length ? `<div class="banner warn">📨 <b>보고 도착 ${reports.length}건</b> — 아래 "보고 도착"에서 확인해 주세요</div>` : ''}
       <div class="grid ${owner ? 'g2' : ''}">
@@ -385,6 +408,7 @@
         </div>` : ''}
       </div>`;
     $$('[data-rgo]', box).forEach((b) => (b.onclick = () => (location.hash = `#/word?date=${todayStr()}&course=${b.dataset.course}&re=${b.dataset.rgo}`)));
+    if ($('#secSeen', box)) $('#secSeen', box).onclick = async () => { await api('POST', '/api/security/alerts/seen'); draw(); };
     $('#tdMine', box).onclick = () => taskModal(null, 'personal', [], draw);
     $('#tdMineMng', box).onclick = () => taskManageModal('personal', draw);
     if (owner) {
@@ -1512,6 +1536,290 @@
       <label class="field"><span>특이사항 메모</span><textarea name="memo">${h(s.memo)}</textarea></label>`;
   }
 
+  // ───────── 엑셀(.xlsx) 내려받기: 따로 프로그램 없이 브라우저에서 바로 만들어요 ─────────
+  const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  const crc32 = (b) => { let c = 0xffffffff; for (let i = 0; i < b.length; i++) c = CRC_T[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  function zipStore(files) {
+    const enc = new TextEncoder(), parts = [], central = [];
+    let off = 0;
+    for (const [name, text] of files) {
+      const nb = enc.encode(name), data = enc.encode(text), crc = crc32(data);
+      const lh = new DataView(new ArrayBuffer(30));
+      lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
+      lh.setUint32(14, crc, true); lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true); lh.setUint16(26, nb.length, true);
+      parts.push(new Uint8Array(lh.buffer), nb, data);
+      const ch = new DataView(new ArrayBuffer(46));
+      ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+      ch.setUint32(16, crc, true); ch.setUint32(20, data.length, true); ch.setUint32(24, data.length, true); ch.setUint16(28, nb.length, true); ch.setUint32(42, off, true);
+      central.push(new Uint8Array(ch.buffer), nb);
+      off += 30 + nb.length + data.length;
+    }
+    const csize = central.reduce((a, x) => a + x.length, 0);
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true); end.setUint32(12, csize, true); end.setUint32(16, off, true);
+    return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+  function downloadXlsx(filename, sheets) {
+    const x = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
+    const col = (i) => { let s = ''; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
+    const sheetXml = (rows) => {
+      const widths = [];
+      rows.forEach((r) => r.forEach((v, i) => { const w = String(v ?? '').split('').reduce((a, c) => a + (c.charCodeAt(0) > 255 ? 2 : 1), 0); widths[i] = Math.min(60, Math.max(widths[i] || 6, w + 2)); }));
+      return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
+        + `<cols>${widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols><sheetData>`
+        + rows.map((r, ri) => `<row r="${ri + 1}">${r.map((v, ci) => {
+          const ref = `${col(ci)}${ri + 1}`, st = ri === 0 ? ' s="1"' : '';
+          if (typeof v === 'number' && isFinite(v)) return `<c r="${ref}"${ri === 0 ? st : ' s="2"'}><v>${v}</v></c>`;
+          if (v == null || v === '') return '';
+          return `<c r="${ref}" t="inlineStr"${st}><is><t xml:space="preserve">${x(v)}</t></is></c>`;
+        }).join('')}</row>`).join('') + '</sheetData></worksheet>';
+    };
+    const names = sheets.map((sh, i) => x(String(sh.name || `Sheet${i + 1}`).replace(/[\\/?*[\]:]/g, ' ').slice(0, 31)));
+    const files = [
+      ['[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`],
+      ['_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+      ['xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${names.map((n, i) => `<sheet name="${n}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`],
+      ['xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
+      ['xl/styles.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0"/></numFmts><fonts count="2"><font><sz val="11"/><name val="맑은 고딕"/></font><font><b/><sz val="11"/><name val="맑은 고딕"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE6F4D6"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'],
+      ...sheets.map((sh, i) => [`xl/worksheets/sheet${i + 1}.xml`, sheetXml(sh.rows)]),
+    ];
+    const blob = zipStore(files);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    toast('엑셀 파일을 내려받았어요');
+  }
+  // 표(table.list)를 그대로 엑셀로
+  function tableToRows(table) {
+    return $$('tr', table).filter((tr) => tr.style.display !== 'none').map((tr) => $$('th,td', tr).filter((c) => !c.classList.contains('nosel') && !c.classList.contains('no-xls')).map((c) => {
+      const t = c.innerText.replace(/\s*\n\s*/g, ' / ').replace(/\s+수납$/, '').trim();
+      const n = t.replace(/[,원\s]/g, '');
+      return /^-?\d+(\.\d+)?$/.test(n) && n.length < 15 && !/^0\d/.test(n) ? Number(n) : t;
+    }));
+  }
+
+  // ───────── 원장 전용: 매출·수익 (보안) ─────────
+  // 겹겹이: 원장 로그인 → 등록한 기기 → 매출 비밀번호(6자리) → 15분 뒤 자동 잠금. 화면을 떠나면 바로 잠겨요.
+  const FIN = { token: null, timer: null, until: 0 };
+  function deviceToken() {
+    let t = null;
+    try { t = localStorage.getItem('saesol_device'); } catch {}
+    if (!/^[a-f0-9]{64}$/.test(t || '')) {
+      t = [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, '0')).join('');
+      try { localStorage.setItem('saesol_device', t); } catch {}
+    }
+    return t;
+  }
+  function finLock(redraw) {
+    if (FIN.token) fetch('/api/finance/lock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', credentials: 'same-origin' }).catch(() => {});
+    FIN.token = null; FIN.until = 0;
+    clearInterval(FIN.timer); FIN.timer = null;
+    if (redraw && location.hash.startsWith('#/finance')) router();
+  }
+  async function finApi(method, path, body) {
+    const headers = { 'x-device': deviceToken() };
+    if (FIN.token) headers['x-finance'] = FIN.token;
+    if (body) headers['content-type'] = 'application/json';
+    const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
+    let data = {};
+    try { data = await res.json(); } catch {}
+    if (res.status === 428) { FIN.token = null; setTimeout(() => router()); throw new Error(data.error); }
+    if (res.status === 401) { state.me = null; showLogin(); throw new Error(data.error || '로그인이 필요해요'); }
+    if (!res.ok) throw new Error(data.error || '오류가 났어요');
+    return data;
+  }
+  async function pageFinance(el, parts, query) {
+    const stt = await finApi('GET', '/api/finance/status');
+    if (!stt.device_ok) {
+      const first = !stt.pin_set;
+      el.innerHTML = `<div class="card lockbox">
+        <div style="font-size:40px">🔒</div><h1 style="margin:6px 0">매출·수익은 등록한 기기에서만 볼 수 있어요</h1>
+        <p class="small muted">${stt.devices ? `<b class="red-t">이 기기는 등록되어 있지 않아요.</b> 방금 접근한 기록이 남았고, 원장님께 알림이 갔어요.<br>원장님 본인이라면 아래에서 이 기기를 등록하세요.` : '처음 한 번만 이 기기를 등록하면 돼요. 앞으로 등록한 기기가 아닌 곳에서 열면 원장님께 알림이 가요.'}</p>
+        <form id="regF" style="text-align:left">
+          <label class="field"><span>이 기기 이름</span><input type="text" name="name" value="${h(stt.suggest_name || '')}" placeholder="예: 원장실 노트북"></label>
+          <label class="field"><span>원장 로그인 비밀번호</span><input type="password" name="password" autocomplete="current-password" required></label>
+          <label class="field"><span>${first ? '매출 비밀번호 새로 정하기 (숫자 6자리) — 로그인 비밀번호와 다르게' : '매출 비밀번호 (숫자 6자리)'}</span><input type="password" name="pin" inputmode="numeric" maxlength="6" pattern="\\d{6}" class="pin-in" required autocomplete="off"></label>
+          ${first ? '<label class="field"><span>매출 비밀번호 한 번 더</span><input type="password" name="pin2" inputmode="numeric" maxlength="6" class="pin-in" required autocomplete="off"></label>' : ''}
+          ${!stt.alert_phone_set ? '<label class="field"><span>보안 알림 받을 원장님 휴대폰 번호</span><input type="tel" name="alert_phone" placeholder="010-0000-0000"></label>' : ''}
+          <div class="err"></div>
+          <button class="btn primary" style="width:100%">이 기기 등록하기</button>
+        </form>
+        <div class="small muted mt">💡 비밀번호는 원장님이 직접 넣어 주세요. 이 기기 브라우저의 기록을 지우면 다시 등록해야 해요.</div></div>`;
+      $('#regF').onsubmit = async (e) => {
+        e.preventDefault();
+        const d = Object.fromEntries(new FormData(e.target));
+        try {
+          if (first && d.pin !== d.pin2) throw new Error('매출 비밀번호 두 개가 서로 달라요');
+          await finApi('POST', '/api/finance/devices', d);
+          toast('이 기기를 등록했어요'); router();
+        } catch (err) { $('.err', e.target).textContent = err.message; }
+      };
+      return;
+    }
+    if (!FIN.token) {
+      el.innerHTML = `<div class="card lockbox">
+        <div style="font-size:40px">🔐</div><h1 style="margin:6px 0">매출·수익</h1>
+        <p class="small muted">등록된 기기예요 (${h(stt.device_name || '')}). 매출 비밀번호 6자리를 넣어 주세요.<br>열고 15분이 지나거나 다른 화면으로 가면 자동으로 잠겨요.</p>
+        ${stt.locked ? '<div class="banner warn">비밀번호를 여러 번 틀려서 잠겨 있어요. 30분 뒤에 다시 해 주세요.</div>' : ''}
+        <form id="pinF"><input type="password" name="pin" inputmode="numeric" maxlength="6" class="pin-in" autocomplete="off" autofocus required>
+          <div class="err"></div><button class="btn primary mt" style="width:100%">열기</button></form></div>`;
+      $('#pinF input').focus();
+      $('#pinF').onsubmit = async (e) => {
+        e.preventDefault();
+        try {
+          const r = await finApi('POST', '/api/finance/unlock', { pin: new FormData(e.target).get('pin') });
+          FIN.token = r.token; FIN.until = Date.now() + r.minutes * 60e3;
+          clearInterval(FIN.timer);
+          FIN.timer = setInterval(() => {
+            const left = FIN.until - Date.now();
+            const t = $('#finLeft'); if (t) t.textContent = `${Math.max(0, Math.ceil(left / 60e3))}분 뒤 잠김`;
+            if (left <= 0) { toast('15분이 지나서 매출 화면을 잠갔어요'); finLock(true); }
+          }, 15e3);
+          router();
+        } catch (err) { $('.err', e.target).textContent = err.message; e.target.reset(); }
+      };
+      return;
+    }
+    const month = /^\d{4}-\d{2}$/.test(query.month || '') ? query.month : thisMonth();
+    const d = await finApi('GET', `/api/finance/summary?month=${month}`);
+    const T = d.totals;
+    const mLabel = `${Number(month.slice(5))}월`;
+    const pct = (v) => (v == null ? '-' : `${v}%`);
+    const maxRecv = Math.max(1, ...d.by_teacher.map((r) => r.received));
+    const maxTrend = Math.max(1, ...d.trend.map((t) => Math.max(t.revenue, t.cost)));
+    el.innerHTML = `
+      <div class="page-head"><div><h1>💰 매출·수익 <span class="chip green" style="vertical-align:middle">🔓 열림 · <span id="finLeft">${FIN_LEFT()}분 뒤 잠김</span></span></h1>
+        <p>원장님만 보는 화면이에요. 교육비는 <b>수납된 돈</b> 기준이고, 선생님별 매출은 학생이 듣는 반의 수강료 비율로 나눠 계산해요.</p></div>
+        <div class="row"><input type="month" id="finMonth" value="${month}" style="width:auto"><button class="btn" id="finXls">⬇ 엑셀</button><button class="btn" id="finSec">🛡 보안</button><button class="btn danger" id="finLockBtn">🔒 잠그기</button></div></div>
+
+      <div class="grid g4">
+        <div class="fin-tile"><div class="small">${mLabel} 총매출 (받은 돈)</div><div class="fin-big">${won(T.revenue)}</div><div class="small">교육비 ${won(T.tuition_received)} + 교재비 ${won(T.book_received)}</div></div>
+        <div class="fin-tile"><div class="small">${mLabel} 교육비</div><div class="fin-big">${won(T.tuition_received)}</div><div class="small">청구 ${won(T.tuition_billed)} · <span class="${T.tuition_unpaid ? 'red-t' : ''}">미수 ${won(T.tuition_unpaid)}</span></div></div>
+        <div class="fin-tile"><div class="small">${mLabel} 교재 배부 금액</div><div class="fin-big">${won(T.book_given)}</div><div class="small">${T.book_qty}권 배부 · 교재비 받은 돈 ${won(T.book_received)}</div></div>
+        <div class="fin-tile"><div class="small">${mLabel} 순이익</div><div class="fin-big ${T.profit < 0 ? 'red-t' : ''}">${won(T.profit)}</div><div class="small">비용 ${won(T.cost)} · 이익률 <b>${pct(T.margin)}</b></div></div>
+      </div>
+
+      <div class="card mt">
+        <div class="row"><h2 style="margin:0">👩‍🏫 선생님별 수익</h2><span class="small muted">받은 교육비 − 그 선생님 비용(급여·수당 등) = 순이익</span></div>
+        <div class="table-wrap mt"><table class="list" id="tblTeacher"><thead><tr><th>선생님</th><th>반</th><th>학생</th><th>청구 매출</th><th>받은 매출</th><th>매출 비중</th><th>선생님 비용</th><th>순이익</th><th>이익률</th><th class="no-xls"></th></tr></thead><tbody>
+          ${d.by_teacher.map((r) => `<tr><td style="white-space:nowrap">${r.teacher_id ? withAvatar(r.teacher_id, r.photo_v, r.name, 22) : h(r.name)}</td><td>${r.courses}</td><td>${r.students}</td>
+            <td style="white-space:nowrap">${won(r.billed)}</td><td style="white-space:nowrap"><b>${won(r.received)}</b>${r.unpaid ? `<div class="small red-t">미수 ${won(r.unpaid)}</div>` : ''}</td><td>${pct(r.share)}</td>
+            <td style="white-space:nowrap">${won(r.cost)}</td><td style="white-space:nowrap" class="${r.profit < 0 ? 'red-t' : ''}"><b>${won(r.profit)}</b></td><td><b class="${r.margin != null && r.margin < 0 ? 'red-t' : 'green-t'}">${pct(r.margin)}</b></td>
+            <td class="no-xls" style="width:140px"><div class="bar ${r.profit < 0 ? 'neg' : ''}"><i style="width:${Math.min(100, Math.abs(r.profit) / maxRecv * 100)}%"></i></div></td></tr>`).join('') || '<tr><td colspan="10" class="empty">반에 학생이 없어요</td></tr>'}
+          ${d.by_teacher.length ? `<tr style="background:#f7faf2"><td><b>공통 비용</b></td><td></td><td></td><td></td><td></td><td></td><td>${won(T.common_cost)}</td><td colspan="3" class="small muted">임대료·관리비처럼 선생님을 정하지 않은 비용</td></tr>
+          <tr style="background:#eef6e3"><td><b>합계</b></td><td></td><td></td><td>${won(T.tuition_billed)}</td><td><b>${won(T.tuition_received)}</b></td><td>100%</td><td>${won(T.cost)}</td><td><b>${won(T.tuition_received + T.book_received - T.cost)}</b></td><td><b>${pct(T.margin)}</b></td><td class="no-xls"></td></tr>` : ''}
+        </tbody></table></div>
+        <div class="small muted mt">💡 선생님 급여·수당은 아래 비용에서 <b>선생님을 골라</b> 넣어야 선생님별 순이익에 들어가요. 교재비는 선생님별로 나누지 않고 합계에만 들어가요.</div>
+      </div>
+
+      <div class="grid g2 mt">
+        <div class="card">
+          <div class="row"><h2 style="margin:0">🧾 ${mLabel} 비용 ${won(T.cost)}</h2><span class="space"></span><button class="btn sm" id="expCopy">지난달 비용 가져오기</button><button class="btn sm primary" id="expAdd">＋ 비용</button></div>
+          <div class="table-wrap mt"><table class="list" id="tblExp"><thead><tr><th>항목</th><th>선생님</th><th>금액</th><th>메모</th><th class="no-xls"></th></tr></thead><tbody>
+            ${d.expenses.map((x) => `<tr><td>${h(x.category)}</td><td>${h(x.teacher_name || '공통')}</td><td style="white-space:nowrap">${won(x.amount)}</td><td class="small">${h(x.memo || '')}</td><td class="no-xls"><button class="btn sm danger" data-expdel="${x.id}">지우기</button></td></tr>`).join('') || '<tr><td colspan="5" class="empty">비용을 넣어 주세요 (급여, 임대료, 관리비 …)</td></tr>'}
+          </tbody></table></div>
+        </div>
+        <div class="card">
+          <h2 style="margin:0">📈 최근 6개월</h2>
+          <table class="list mt" id="tblTrend"><thead><tr><th>달</th><th>매출</th><th>비용</th><th>순이익</th><th class="no-xls" style="width:40%"></th></tr></thead><tbody>
+            ${d.trend.map((t) => `<tr><td>${Number(t.month.slice(5))}월</td><td style="white-space:nowrap">${won(t.revenue)}</td><td style="white-space:nowrap">${won(t.cost)}</td><td style="white-space:nowrap" class="${t.profit < 0 ? 'red-t' : ''}"><b>${won(t.profit)}</b></td>
+              <td class="no-xls"><div class="bar"><i style="width:${t.revenue / maxTrend * 100}%"></i></div><div class="bar neg" style="margin-top:3px"><i style="width:${t.cost / maxTrend * 100}%"></i></div></td></tr>`).join('')}
+          </tbody></table>
+          <div class="small muted mt">연두 막대 = 매출, 빨간 막대 = 비용</div>
+        </div>
+      </div>`;
+    $('#finMonth').onchange = (e) => (location.hash = `#/finance?month=${e.target.value}`);
+    $('#finLockBtn').onclick = () => { finLock(true); toast('잠갔어요'); };
+    $('#finXls').onclick = () => downloadXlsx(`매출수익_${month}.xlsx`, [
+      { name: '요약', rows: [['항목', '금액'], ['총매출(받은 돈)', T.revenue], ['교육비 청구', T.tuition_billed], ['교육비 받은 돈', T.tuition_received], ['교육비 미수', T.tuition_unpaid], ['교재 배부 금액', T.book_given], ['교재 배부 권수', T.book_qty], ['교재비 받은 돈', T.book_received], ['비용 합계', T.cost], ['선생님 비용', T.teacher_cost], ['공통 비용', T.common_cost], ['순이익', T.profit], ['이익률(%)', T.margin ?? '']] },
+      { name: '선생님별', rows: [['선생님', '반 수', '학생 수', '청구 매출', '받은 매출', '미수', '매출 비중(%)', '선생님 비용', '순이익', '이익률(%)'], ...d.by_teacher.map((r) => [r.name, r.courses, r.students, r.billed, r.received, r.unpaid, r.share, r.cost, r.profit, r.margin ?? ''])] },
+      { name: '비용', rows: [['항목', '선생님', '금액', '메모'], ...d.expenses.map((x) => [x.category, x.teacher_name || '공통', x.amount, x.memo || ''])] },
+      { name: '6개월', rows: [['달', '매출', '비용', '순이익'], ...d.trend.map((t) => [t.month, t.revenue, t.cost, t.profit])] },
+    ]);
+    $('#expAdd').onclick = () => modal({
+      title: `${mLabel} 비용 넣기`,
+      body: `<label class="field"><span>항목</span><select name="category">${d.categories.map((c) => `<option>${c}</option>`).join('')}</select></label>
+        <label class="field"><span>어느 선생님 비용인가요? <span class="muted small">(급여·수당이면 꼭 골라 주세요)</span></span><select name="teacher_id"><option value="">공통 (선생님 없음)</option>${d.teachers.map((t) => `<option value="${t.id}">${h(t.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>금액</span><input type="text" name="amount" inputmode="numeric" required></label>
+        <label class="field"><span>메모</span><input type="text" name="memo"></label>`,
+      onSubmit: async (f) => { await finApi('POST', '/api/finance/expenses', { ...f, month }); toast('넣었어요'); router(); },
+    });
+    $('#expCopy').onclick = async () => { if (!confirm('지난달 비용을 이번 달로 그대로 복사할까요?')) return; try { const r = await finApi('POST', '/api/finance/expenses/copy', { month }); toast(`${r.count}개 가져왔어요`); router(); } catch (e) { toast(e.message); } };
+    $$('[data-expdel]', el).forEach((b) => (b.onclick = async () => { if (!confirm('이 비용을 지울까요?')) return; await finApi('DELETE', `/api/finance/expenses/${b.dataset.expdel}`); router(); }));
+    $('#finSec').onclick = async () => {
+      const sx = await finApi('GET', '/api/finance/security');
+      modal({
+        title: '🛡 매출 화면 보안', wide: true, submitText: '저장',
+        body: `<h3 style="margin:0">등록된 기기</h3>
+          <table class="list mt"><tbody>${sx.devices.map((v) => `<tr><td><b>${h(v.name)}</b></td><td class="small muted">등록 ${prettyDate(v.created_at.slice(0, 10))} · 마지막 사용 ${v.last_used ? prettyDate(v.last_used.slice(0, 10)) : '-'}</td><td><button type="button" class="btn sm danger" data-devdel="${v.id}">등록 해제</button></td></tr>`).join('')}</tbody></table>
+          <label class="field mt"><span>보안 알림 받을 휴대폰</span><input type="tel" name="alert_phone" value="${h(fmtPhone(sx.alert_phone || ''))}"></label>
+          <div class="grid g2"><label class="field"><span>매출 비밀번호 바꾸기 — 지금 번호</span><input type="password" name="old_pin" inputmode="numeric" maxlength="6" autocomplete="off"></label>
+          <label class="field"><span>새 번호 (6자리)</span><input type="password" name="new_pin" inputmode="numeric" maxlength="6" autocomplete="off"></label></div>
+          <h3 style="margin:14px 0 0">접근 기록 (최근 100건)</h3>
+          <div class="table-wrap" style="max-height:260px;overflow:auto"><table class="list mt"><thead><tr><th>언제</th><th>무슨 일</th><th>기기</th><th>IP</th></tr></thead><tbody>${sx.events.map((v) => `<tr><td class="small" style="white-space:nowrap">${prettyTime(v.created_at)}</td><td class="small">${h(v.kind)}</td><td class="small">${h(v.device)}</td><td class="small">${h(v.ip || '')}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">기록이 없어요</td></tr>'}</tbody></table></div>`,
+        onOpen: (f, close) => $$('[data-devdel]', f).forEach((b) => (b.onclick = async () => { if (!confirm('이 기기 등록을 해제할까요? 그 기기에서는 다시 등록해야 매출을 볼 수 있어요.')) return; try { await finApi('DELETE', `/api/finance/devices/${b.dataset.devdel}`); close(); toast('해제했어요'); } catch (e) { toast(e.message); } })),
+        onSubmit: async (f) => { await finApi('PUT', '/api/finance/security', f); toast('저장했어요'); },
+      });
+    };
+  }
+  const FIN_LEFT = () => Math.max(0, Math.ceil((FIN.until - Date.now()) / 60e3));
+
+  // ───────── 문자 보내기 (학생·학부모·단체) ─────────
+  function bulkMsgModal({ ids = [], schools = [], courses = [], school, grade, course }) {
+    let checkedKey = null;
+    const tgtDefault = ids.length ? 'selected' : course ? 'course' : school ? 'school' : 'all';
+    modal({
+      title: '✉ 문자 보내기', wide: true, submitText: '미리 보기',
+      body: `
+        <div class="field"><span>누구에게?</span>
+          <div class="seg wrap">
+            <label><input type="radio" name="target" value="selected" ${tgtDefault === 'selected' ? 'checked' : ''} ${ids.length ? '' : 'disabled'}> 고른 학생 ${ids.length}명</label>
+            <label><input type="radio" name="target" value="course" ${tgtDefault === 'course' ? 'checked' : ''}> 반별</label>
+            <label><input type="radio" name="target" value="school" ${tgtDefault === 'school' ? 'checked' : ''}> 학교별</label>
+            <label><input type="radio" name="target" value="all" ${tgtDefault === 'all' ? 'checked' : ''}> 재원생 전체</label>
+          </div></div>
+        <label class="field" data-t="course"><span>반</span><select name="course_id">${courses.map((c) => `<option value="${c.id}" ${String(course) === String(c.id) ? 'selected' : ''}>${h(c.subject)} · ${h(c.name)}</option>`).join('')}</select></label>
+        <div class="grid g2" data-t="school"><label class="field"><span>학교</span><select name="school">${schools.map((x) => `<option ${school === x ? 'selected' : ''}>${h(x)}</option>`).join('')}</select></label>
+          <label class="field"><span>학년 <span class="muted small">(비우면 전 학년)</span></span><input type="text" name="grade" value="${h(grade || '')}" placeholder="예: 중2"></label></div>
+        <div class="field"><span>받는 사람</span>
+          <div class="seg"><label><input type="radio" name="to" value="parent" checked> 학부모</label><label><input type="radio" name="to" value="student"> 학생</label><label><input type="radio" name="to" value="both"> 학생 + 학부모</label></div>
+          <div class="small muted">학부모는 학생 카드의 "문자 받을 분"(어머니/아버지/둘 다)에게 가요.</div></div>
+        <label class="field"><span>내용 <span class="muted small">— {학생} 이라고 쓰면 학생 이름으로 바뀌어요 · <span id="mlen">0</span>자</span></span>
+          <textarea name="text" style="min-height:150px" placeholder="[새솔학원] 안녕하세요, {학생} 학부모님.&#10;12월 휴강 안내드립니다…"></textarea></label>
+        <div id="mPrev"></div>`,
+      onOpen: (f) => {
+        const sync = () => { const t = $('input[name=target]:checked', f).value; $$('[data-t]', f).forEach((x) => (x.style.display = x.dataset.t === t ? '' : 'none')); reset(); };
+        const reset = () => { checkedKey = null; $('button[type=submit]', f).textContent = '미리 보기'; $('#mPrev', f).innerHTML = ''; };
+        $$('input[name=target]', f).forEach((r) => (r.onchange = sync));
+        $$('input[name=to]', f).forEach((r) => (r.onchange = reset));
+        $$('select, input[name=grade]', f).forEach((x) => (x.oninput = reset));
+        $('textarea', f).oninput = (e) => { $('#mlen', f).textContent = e.target.value.length; reset(); };
+        sync();
+      },
+      onSubmit: async (d) => {
+        if (!String(d.text || '').trim()) throw new Error('보낼 내용을 적어 주세요');
+        const body = { target: d.target, to: d.to, text: d.text, ids, course_id: d.course_id, school: d.school, grade: d.grade };
+        const key = JSON.stringify(body);
+        const f = $('.modal form') || document;
+        if (checkedKey !== key) {
+          const p = await api('POST', '/api/messages/bulk', { ...body, preview: true });
+          $('#mPrev').innerHTML = `<div class="howto mt"><b>${p.students}명</b>에게 문자 <b>${p.messages}통</b>이 가요${p.no_phone ? ` · <span class="red-t">번호가 없는 학생 ${p.no_phone}명은 빠져요</span>` : ''}
+            <div class="small muted" style="margin-top:4px">${p.names.map(h).join(', ')}${p.students > p.names.length ? ' …' : ''}</div>
+            <div class="small" style="margin-top:6px;white-space:pre-wrap;background:#fff;border-radius:8px;padding:8px">${h(p.sample || '')}</div>
+            ${p.send_mode !== 'real' ? '<div class="small" style="color:var(--orange);margin-top:6px">지금은 <b>미리보기 모드</b>라서 실제로 가지 않고 발송 기록에만 남아요.</div>' : ''}</div>`;
+          checkedKey = key;
+          const btn = $('.modal button[type=submit]');
+          btn.textContent = `${p.messages}통 보내기`;
+          setTimeout(() => (btn.disabled = !p.messages));
+          return true;
+        }
+        if (!confirm('정말 보낼까요? 보낸 문자는 취소할 수 없어요.')) return true;
+        const r = await api('POST', '/api/messages/bulk', body);
+        toast(`문자 ${r.sent}통 보냈어요${r.failed ? ` · 실패 ${r.failed}` : ''}`);
+      },
+    });
+  }
+
   // 수납 기록 창 (학생 명부·학생 카드에서 함께 써요). 결제 방법은 여러 개 고를 수 있어요(나눠 낸 경우).
   const PAY_METHODS = { 교육비: ['계좌', '영주사랑 모바일', '영주사랑 상품권', '신용카드', '현금'], 교재비: ['계좌', '현금'] };
   function payModal({ sid, name, kind, amount, month, sub, done }) {
@@ -1542,46 +1850,85 @@
     if (parts[0]) return pageStudent(el, Number(parts[0]));
     const st = query.status ?? '재원';
     const qs = new URLSearchParams(Object.entries({ status: st, q: query.q }).filter(([, v]) => v)).toString();
-    const { students, view, month } = await api('GET', '/api/students' + (qs ? '?' + qs : ''));
+    const [{ students, view, month }, { courses }] = await Promise.all([api('GET', '/api/students' + (qs ? '?' + qs : '')), api('GET', '/api/courses').catch(() => ({ courses: [] }))]);
     const showT = students.some((x) => x.tuition), showB = view.bookpay;
-    const unpaid = (x) => (x.tuition && (x.tuition.state === '미납' || x.tuition.state === '부분')) || x.book_due > 0;
-    const list = query.unpaid ? students.filter(unpaid) : students;
+    const tUnpaid = (x) => x.tuition && (x.tuition.state === '미납' || x.tuition.state === '부분');
+    const bUnpaid = (x) => x.book_due > 0;
+    const pay = query.pay || (query.unpaid ? 'any' : '');
+    const ko = (a, b) => String(a).localeCompare(String(b), 'ko', { numeric: true });
+    const schools = [...new Set(students.map((x) => x.school).filter(Boolean))].sort(ko);
+    const grades = [...new Set(students.filter((x) => !query.school || x.school === query.school).map((x) => x.grade).filter(Boolean))].sort(ko);
+    const myCourses = courses.filter((c) => c.active !== 0).sort((a, b) => ko(a.subject + a.name, b.subject + b.name));
+    const list = students.filter((x) =>
+      (!query.school || x.school === query.school) &&
+      (!query.grade || x.grade === query.grade) &&
+      (!query.course || String(x.course_ids || '').split(',').includes(String(query.course))) &&
+      (pay === 'tuition' ? tUnpaid(x) : pay === 'book' ? bUnpaid(x) : pay === 'any' ? tUnpaid(x) || bUnpaid(x) : true));
     const tChip = (t) => !t ? '' : t.state === '완납' ? '<span class="chip green">완납</span>' : t.state === '부분' ? `<span class="chip orange">${won(t.due)} 남음</span>` : t.state === '미납' ? '<span class="chip red">미납</span>' : '<span class="muted small">-</span>';
     const count = (k) => students.filter((s) => s.status === k).length;
+    const canMsg = isOwner() || isManager();
+    const nT = students.filter(tUnpaid).length, nB = students.filter(bUnpaid).length;
     el.innerHTML = `
       <div class="page-head"><div><h1>학생 명부</h1><p>${isOwner() ? '학생을 누르면 인적사항·상담·교재·수납이 한 화면에 나와요.' : isManager() ? '학원 전체 학생이에요. 학생을 누르면 학생 카드가 열려요.' : '내 반 학생만 보여요. 학생을 누르면 학생 카드가 열려요.'}</p></div>
-        ${canEditStudents() ? '<div class="row"><button class="btn" id="bulk">여러 명 한꺼번에 추가</button><button class="btn primary" id="add">＋ 학생 등록</button></div>' : ''}</div>
+        <div class="row">${canMsg ? '<button class="btn" id="msgBtn">✉ 문자 보내기</button>' : ''}<button class="btn" id="xlsBtn">⬇ 엑셀</button>${canEditStudents() ? '<button class="btn" id="bulk">여러 명 한꺼번에 추가</button><button class="btn primary" id="add">＋ 학생 등록</button>' : ''}</div></div>
       <div class="card">
         <form class="row" id="filter">
           <div class="tabs">${[['재원', '재원생'], ['휴원', '휴원생'], ['퇴원', '퇴원생'], ['', '전체']].map(([v, l]) => `<button type="button" class="btn sm ${st === v ? 'primary' : ''}" data-st="${v}">${l}</button>`).join('')}</div>
-          ${showT || showB ? `<label class="inline-check small" style="margin-left:6px"><input type="checkbox" id="unpaid" ${query.unpaid ? 'checked' : ''}> 미납만 보기</label>` : ''}
           <span class="space"></span>
           <input type="search" name="q" placeholder="이름·학교 검색" value="${h(query.q || '')}" style="width:180px">
           <button class="btn">찾기</button>
         </form>
+        <div class="row mt filters" style="gap:8px">
+          <select id="fSchool"><option value="">학교 전체</option>${schools.map((x) => `<option ${query.school === x ? 'selected' : ''}>${h(x)}</option>`).join('')}</select>
+          <select id="fGrade"><option value="">학년 전체</option>${grades.map((x) => `<option ${query.grade === x ? 'selected' : ''}>${h(x)}</option>`).join('')}</select>
+          <select id="fCourse"><option value="">반 전체</option>${myCourses.map((c) => `<option value="${c.id}" ${String(query.course) === String(c.id) ? 'selected' : ''}>${h(c.subject)} · ${h(c.name)}</option>`).join('')}</select>
+          ${showT || showB ? `<div class="tabs">${[['', '전체'], ...(showT ? [['tuition', `교육비 미납 ${nT}`]] : []), ...(showB ? [['book', `교재비 미납 ${nB}`]] : [])].map(([v, l]) => `<button type="button" class="btn sm ${pay === v || (pay === 'any' && !v && false) ? 'primary' : ''} ${v ? 'warn-tab' : ''}" data-pay="${v}">${l}</button>`).join('')}</div>` : ''}
+          ${query.school || query.grade || query.course || pay ? '<button type="button" class="btn sm" id="fReset">조건 지우기</button>' : ''}
+        </div>
         <div class="table-wrap mt"><table class="list">
-          <thead><tr><th></th><th>이름</th><th>학교·학년</th>${view.birth ? '<th>생년월일</th>' : ''}<th>수강</th>${view.parents ? '<th>어머니 / 아버지</th>' : ''}${showT ? `<th>${Number(month.slice(5))}월 교육비</th>` : ''}${showB ? '<th>교재비</th>' : ''}<th>상태</th></tr></thead>
+          <thead><tr>${canMsg ? '<th style="width:30px"><input type="checkbox" id="selAll" title="모두 고르기"></th>' : ''}<th></th><th>이름</th><th>학교</th><th>학년</th>${view.birth ? '<th>생년월일</th>' : ''}<th>수강</th>${view.parents ? '<th>어머니 / 아버지</th>' : ''}${showT ? `<th>${Number(month.slice(5))}월 교육비</th>` : ''}${showB ? '<th>교재비</th>' : ''}<th>상태</th></tr></thead>
           <tbody>${list.map((s) => `<tr class="click" data-id="${s.id}">
+            ${canMsg ? `<td class="nosel"><input type="checkbox" class="sel" value="${s.id}"></td>` : ''}
             <td style="width:44px">${sAvatar(s, 34)}</td>
             <td style="white-space:nowrap"><b>${h(s.name)}</b>${s.sibling_count ? ` <span class="chip gold" title="형제·자매가 함께 다녀요">형제 ${s.sibling_count}</span>` : ''}</td>
-            <td style="white-space:nowrap">${h(s.school || '')} ${h(s.grade || '')}</td>
+            <td style="white-space:nowrap">${h(s.school || '')}</td>
+            <td style="white-space:nowrap">${h(s.grade || '')}</td>
             ${view.birth ? `<td class="small" style="white-space:nowrap">${h(s.birth_date || '')}</td>` : ''}
-            <td class="small" style="min-width:180px">${h(s.courses || '-')}</td>
+            <td class="small" style="min-width:180px">${h(s.courses || '-')}${s.extras ? s.extras.map((x) => ` <span class="chip">🧮 ${h(x)}</span>`).join('') : ''}</td>
             ${view.parents ? `<td class="small" style="white-space:nowrap">${h(fmtPhone(s.mother_phone)) || '-'}<br>${h(fmtPhone(s.father_phone)) || '-'}</td>` : ''}
             ${showT ? `<td style="white-space:nowrap">${tChip(s.tuition)}${isOwner() && s.tuition ? ` <button class="btn sm paybtn" data-payt="${s.id}">수납</button>` : ''}</td>` : ''}
             ${showB ? `<td style="white-space:nowrap">${s.book_due ? `<span class="chip red">${won(s.book_due)} 미납</span>` : s.book_total ? '<span class="chip green">정산</span>' : '<span class="muted small">-</span>'}${isOwner() ? ` <button class="btn sm paybtn" data-payb="${s.id}">수납</button>` : ''}</td>` : ''}
             <td>${statusChip(s.status)}${s.has_phone ? '' : ' <span class="chip red">번호 없음</span>'}</td></tr>`).join('')}</tbody>
         </table></div>
-        ${list.length ? `<div class="small muted mt">${list.length}명${query.unpaid ? ' (미납만)' : ''}${st === '' ? ` (재원 ${count('재원')} · 휴원 ${count('휴원')} · 퇴원 ${count('퇴원')})` : ''}</div>` : '<div class="empty">학생이 없어요</div>'}
+        ${list.length ? `<div class="small muted mt">${list.length}명${pay === 'tuition' ? ' (교육비 미납)' : pay === 'book' ? ' (교재비 미납)' : ''}${st === '' ? ` (재원 ${count('재원')} · 휴원 ${count('휴원')} · 퇴원 ${count('퇴원')})` : ''}${canMsg ? ' · <span id="selCount"></span>' : ''}</div>` : '<div class="empty">조건에 맞는 학생이 없어요</div>'}
       </div>`;
     const go = (patch) => {
-      const q = { status: st, q: query.q, unpaid: query.unpaid, ...patch };
-      location.hash = '#/students?' + new URLSearchParams(Object.entries(q).map(([k, v]) => [k, v ?? ''])).toString();
+      const q = { status: st, q: query.q, school: query.school, grade: query.grade, course: query.course, pay, ...patch };
+      location.hash = '#/students?' + new URLSearchParams(Object.entries(q).filter(([k, v]) => v || k === 'status').map(([k, v]) => [k, v ?? ''])).toString();
     };
     $$('[data-st]', el).forEach((b) => (b.onclick = () => go({ status: b.dataset.st })));
-    if ($('#unpaid')) $('#unpaid').onchange = (e) => go({ unpaid: e.target.checked ? '1' : '' });
+    $$('[data-pay]', el).forEach((b) => (b.onclick = () => go({ pay: b.dataset.pay })));
+    $('#fSchool').onchange = (e) => go({ school: e.target.value, grade: '' });
+    $('#fGrade').onchange = (e) => go({ grade: e.target.value });
+    $('#fCourse').onchange = (e) => go({ course: e.target.value });
+    if ($('#fReset')) $('#fReset').onclick = () => go({ school: '', grade: '', course: '', pay: '' });
     $('#filter').onsubmit = (e) => { e.preventDefault(); go({ q: new FormData(e.target).get('q') }); };
-    $$('tr[data-id]', el).forEach((tr) => (tr.onclick = () => (location.hash = `#/students/${tr.dataset.id}`)));
+    $$('tr[data-id]', el).forEach((tr) => (tr.onclick = (e) => { if (e.target.closest('.nosel')) return; location.hash = `#/students/${tr.dataset.id}`; }));
+    const selected = () => $$('.sel:checked', el).map((c) => Number(c.value));
+    const updSel = () => { if ($('#selCount')) $('#selCount').textContent = selected().length ? `${selected().length}명 골랐어요` : '문자를 보낼 학생은 왼쪽 칸을 눌러 고르세요'; };
+    if (canMsg) {
+      $$('.sel', el).forEach((c) => (c.onchange = updSel));
+      $('#selAll').onchange = (e) => { $$('.sel', el).forEach((c) => (c.checked = e.target.checked)); updSel(); };
+      updSel();
+      $('#msgBtn').onclick = () => bulkMsgModal({ ids: selected(), schools, courses: myCourses, school: query.school, grade: query.grade, course: query.course });
+    }
+    $('#xlsBtn').onclick = () => {
+      const head = ['이름', '학교', '학년', ...(view.birth ? ['생년월일'] : []), '수강', ...(view.parents ? ['학생 연락처', '어머니', '어머니 연락처', '아버지', '아버지 연락처'] : []), ...(showT ? [`${Number(month.slice(5))}월 교육비`, '받은 교육비', '남은 교육비'] : []), ...(showB ? ['교재비 합계', '받은 교재비', '교재비 미납'] : []), '상태'];
+      const rows = list.map((s) => [s.name, s.school || '', s.grade || '', ...(view.birth ? [s.birth_date || ''] : []), [s.courses || '', ...(s.extras || [])].filter(Boolean).join(', '), ...(view.parents ? [fmtPhone(s.student_phone) || '', s.mother_name || '', fmtPhone(s.mother_phone) || '', s.father_name || '', fmtPhone(s.father_phone) || ''] : []),
+        ...(showT ? (s.tuition ? [s.tuition.fee || 0, s.tuition.paid || 0, s.tuition.due || 0] : ['', '', '']) : []), ...(showB ? [s.book_total || 0, s.book_paid || 0, s.book_due || 0] : []), s.status]);
+      const tag = [query.school, query.grade, pay === 'tuition' ? '교육비미납' : pay === 'book' ? '교재비미납' : '', st || '전체'].filter(Boolean).join('_');
+      downloadXlsx(`학생명부_${tag}_${todayStr()}.xlsx`, [{ name: '학생 명부', rows: [head, ...rows] }]);
+    };
     const byS = new Map(students.map((x) => [x.id, x]));
     const refresh = () => router();
     $$('[data-payt]', el).forEach((b) => (b.onclick = (e) => {
@@ -1812,11 +2159,14 @@
           ${d.courses.length ? `<table class="list"><tbody>${d.courses.map((c) => `
             <tr style="${c.active ? '' : 'opacity:.5'}"><td><span class="chip">${h(c.subject)}</span></td>
               <td><b>${h(c.name)}</b><div class="small muted row" style="gap:6px">${withAvatar(c.teacher_id, c.teacher_photo_v, c.teacher_name, 18)} ${h(scheduleText(c))}</div></td>
-              ${v.fees ? `<td style="text-align:right;white-space:nowrap">${won(c.fee)}${c.fee_custom ? '<div class="small muted">개별 금액</div>' : ''}${own ? ` <button class="btn sm no-print" data-fee="${c.id}">수정</button>` : ''}</td>` : ''}</tr>`).join('')}</tbody></table>
+              ${v.fees ? `<td style="text-align:right;white-space:nowrap">${won(c.fee)}${c.fee_custom ? '<div class="small muted">개별 금액</div>' : ''}${own ? ` <button class="btn sm no-print" data-fee="${c.id}">수정</button>` : ''}</td>` : ''}</tr>`).join('')}
+              ${(d.extra_items || []).filter((i) => i.on).map((i) => `<tr><td><span class="chip">수학</span></td><td><b>🧮 ${h(i.name)}</b><div class="small muted">추가 수강</div></td>${v.fees ? `<td style="text-align:right;white-space:nowrap">${won(i.amount)}</td>` : ''}</tr>`).join('')}</tbody></table>
             ${v.fees ? `
             ${d.discount_items && d.discount_items.length ? `<div class="discounts mt"><div class="small muted">할인${own ? ' (체크하면 바로 저장돼요)' : ''}</div>
               <div class="days">${d.discount_items.map((i) => `<label class="${i.on ? 'on' : ''}"><input type="checkbox" data-disc="${h(i.id)}" ${i.on ? 'checked' : ''} ${own ? '' : 'disabled'}> ${h(i.name)} <b>-${won(i.amount)}</b></label>`).join('')}</div></div>` : ''}
-            <div class="row mt"><span class="muted">수강료 ${won(d.gross_fee)}${d.discount_total ? ` − 할인 ${won(d.discount_total)}` : ''}</span><span class="space"></span><span class="muted small">월 수강료</span><b style="font-size:18px">${won(d.monthly_fee)}</b></div>` : ''}`
+            ${d.extra_items && d.extra_items.length && (d.extra_eligible || d.extra_total) ? `<div class="discounts mt"><div class="small muted">🧮 초등부 수학 추가 수강${own ? ' (누르면 수강과목에 바로 추가돼요)' : ''}</div>
+              <div class="days">${d.extra_items.map((i) => `<label class="${i.on ? 'on' : ''}"><input type="checkbox" data-extra="${h(i.id)}" ${i.on ? 'checked' : ''} ${own ? '' : 'disabled'}> ${i.on ? '' : '＋ '}${h(i.name)} 추가 <b>+${won(i.amount)}</b></label>`).join('')}</div></div>` : ''}
+            <div class="row mt"><span class="muted">수강료 ${won(d.gross_fee)}${d.extra_total ? ` + 추가 ${won(d.extra_total)}` : ''}${d.discount_total ? ` − 할인 ${won(d.discount_total)}` : ''}</span><span class="space"></span><span class="muted small">월 수강료</span><b style="font-size:18px">${won(d.monthly_fee)}</b></div>` : ''}`
             : `<div class="empty">아직 반에 들어가 있지 않아요${edit ? ' — [반 관리]에서 넣어 주세요' : ''}</div>`}
           ${v.siblings ? `
           <h2 class="mt">형제·자매</h2>
@@ -1910,6 +2260,10 @@
     $$('[data-disc]', el).forEach((cb) => (cb.onchange = async () => {
       const ids = $$('[data-disc]', el).filter((x) => x.checked).map((x) => x.dataset.disc);
       try { await api('PUT', `/api/students/${id}/discounts`, { item_ids: ids }); toast('할인을 저장했어요'); reload(); } catch (e) { toast(e.message); }
+    }));
+    $$('[data-extra]', el).forEach((cb) => (cb.onchange = async () => {
+      const ids = $$('[data-extra]', el).filter((x) => x.checked).map((x) => x.dataset.extra);
+      try { await api('PUT', `/api/students/${id}/extras`, { item_ids: ids }); toast('추가 수업료를 저장했어요'); reload(); } catch (e) { toast(e.message); }
     }));
     const subjModal = (x = {}) => modal({
       title: x.subject ? `${x.subject} 등록 · 퇴원` : '과목 날짜 넣기',
@@ -2192,6 +2546,10 @@
         <p class="small muted" style="margin-top:-6px">학생 카드에서 체크하면 월 수강료에서 빠져요. 이름이나 금액을 바꾸면 체크된 학생 모두에게 바로 반영돼요.</p>
         <div id="discs">${s.discount_items.map((i) => `<div class="row disc-row" style="margin-bottom:6px"><input type="hidden" value="${h(i.id)}" data-did><input type="text" value="${h(i.name)}" data-dname style="flex:2"><input type="text" value="${i.amount}" data-damt inputmode="numeric" style="flex:1"><span class="small muted">원</span><button type="button" class="btn sm danger" data-ddel>✕</button></div>`).join('')}</div>
         <button type="button" class="btn sm" id="discAdd">＋ 할인 항목 추가</button>
+        <h2 class="mt">추가 수업료 항목</h2>
+        <p class="small muted" style="margin-top:-6px">학생 카드에서 체크하면 월 수강료에 <b>더해져요</b>. 예: 사고력수학 1회, 2회</p>
+        <div id="extras">${(s.extra_items || []).map((i) => `<div class="row extra-row" style="margin-bottom:6px"><input type="hidden" value="${h(i.id)}" data-did><input type="text" value="${h(i.name)}" data-dname style="flex:2"><input type="text" value="${i.amount}" data-damt inputmode="numeric" style="flex:1"><span class="small muted">원</span><button type="button" class="btn sm danger" data-ddel>✕</button></div>`).join('')}</div>
+        <button type="button" class="btn sm" id="extraAdd">＋ 추가 수업료 항목 추가</button>
         <h2 class="mt">교재 거래처</h2>
         <label class="field"><span>한 줄에 하나씩</span><textarea name="suppliers" style="min-height:110px">${h(s.book_suppliers.join('\n'))}</textarea></label>
         <h2 class="mt">청구서</h2>
@@ -2241,14 +2599,24 @@
       $('#discs').appendChild(div);
       wireDisc(div);
     };
+    $$('.extra-row', el).forEach(wireDisc);
+    $('#extraAdd').onclick = () => {
+      const div = document.createElement('div');
+      div.className = 'row extra-row';
+      div.style.marginBottom = '6px';
+      div.innerHTML = '<input type="hidden" value="" data-did><input type="text" data-dname placeholder="예: 사고력수학 3회" style="flex:2"><input type="text" data-damt inputmode="numeric" placeholder="금액" style="flex:1"><span class="small muted">원</span><button type="button" class="btn sm danger" data-ddel>✕</button>';
+      $('#extras').appendChild(div);
+      wireDisc(div);
+    };
     $('#f').onsubmit = async (e) => {
       e.preventDefault();
       const d = Object.fromEntries(new FormData(e.target));
       try {
         const teacher_view = Object.fromEntries(Object.keys(s.teacher_view_labels).map((k) => [k, !!d['tv_' + k]]));
         const discount_items = $$('.disc-row', e.target).map((r) => ({ id: $('[data-did]', r).value, name: $('[data-dname]', r).value, amount: $('[data-damt]', r).value })).filter((x) => x.name.trim());
+        const extra_items = $$('.extra-row', e.target).map((r) => ({ id: $('[data-did]', r).value, name: $('[data-dname]', r).value, amount: $('[data-damt]', r).value })).filter((x) => x.name.trim());
         const book_suppliers = String(d.suppliers || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-        await api('PUT', '/api/settings', { academy_name: d.academy_name, mottos: [d.motto0, d.motto1, d.motto2], tpl_attendance: d.tpl_attendance, tpl_feedback: d.tpl_feedback, send_mode: d.send_mode, teacher_view, discount_items, book_suppliers, bank_account: d.bank_account, bank_account_book: d.bank_account_book, tpl_bill: d.tpl_bill, tpl_bill_tuition: d.tpl_bill_tuition, tpl_bill_book: d.tpl_bill_book, word_pass_pct: d.word_pass_pct, tpl_word: d.tpl_word, tpl_word_retest: d.tpl_word_retest, word_books: $$('.wb-row', e.target).map((r) => ({ name: $('.wb-name', r).value, days: $('.wb-days', r).value })), log_remind: { on: !!d.lr_on, after_min: d.lr_after, sms: !!d.lr_sms, start_date: d.lr_start }, tpl_log_remind: d.tpl_log_remind });
+        await api('PUT', '/api/settings', { academy_name: d.academy_name, mottos: [d.motto0, d.motto1, d.motto2], tpl_attendance: d.tpl_attendance, tpl_feedback: d.tpl_feedback, send_mode: d.send_mode, teacher_view, discount_items, extra_items, book_suppliers, bank_account: d.bank_account, bank_account_book: d.bank_account_book, tpl_bill: d.tpl_bill, tpl_bill_tuition: d.tpl_bill_tuition, tpl_bill_book: d.tpl_bill_book, word_pass_pct: d.word_pass_pct, tpl_word: d.tpl_word, tpl_word_retest: d.tpl_word_retest, word_books: $$('.wb-row', e.target).map((r) => ({ name: $('.wb-name', r).value, days: $('.wb-days', r).value })), log_remind: { on: !!d.lr_on, after_min: d.lr_after, sms: !!d.lr_sms, start_date: d.lr_start }, tpl_log_remind: d.tpl_log_remind });
         state.academy = d.academy_name;
         toast('저장했어요');
         renderShell();
@@ -2454,7 +2822,7 @@
           <tbody>${rows.map((r) => `<tr>
             <td><input type="checkbox" data-pick="${r.id}" ${r.total > 0 && r.has_phone ? '' : 'disabled'}></td>
             <td><a href="#/students/${r.id}"><b>${h(r.name)}</b></a> <span class="small muted">${h(r.school || '')} ${h(r.grade || '')}</span>${r.has_phone ? '' : ' <span class="chip red">번호 없음</span>'}</td>
-            ${showT ? `<td style="text-align:right">${won(r.fee)}${r.discount ? `<div class="small muted">할인 -${won(r.discount)}</div>` : ''}</td>
+            ${showT ? `<td style="text-align:right">${won(r.fee)}${r.discount ? `<div class="small muted">할인 -${won(r.discount)}</div>` : ''}${r.extra ? `<div class="small muted">추가 +${won(r.extra)}</div>` : ''}</td>
             <td style="text-align:right">${r.tuition_due ? `<b>${won(r.tuition_due)}</b>` : '-'}${r.paid ? `<div class="small muted">낸 금액 ${won(r.paid)}</div>` : ''}</td>` : ''}
             ${showB ? `<td style="text-align:right">${r.book_due ? `<b>${won(r.book_due)}</b>` : '-'}${!showT && r.recent_books ? `<div class="small muted">${h(r.recent_books)}</div>` : ''}</td>` : ''}
             <td style="text-align:right"><b style="font-size:15px">${won(r.total)}</b></td>
@@ -2475,7 +2843,7 @@
       const st = await api('GET', '/api/settings');
       const lines = [];
       const useT = showT && r.tuition_due > 0, useB = showB && r.book_due > 0;
-      if (useT) lines.push(`· ${mm}월 교육비 ${r.tuition_due.toLocaleString('ko-KR')}원${r.discount ? ` (할인 ${r.discount.toLocaleString('ko-KR')}원 적용)` : ''}${r.paid ? ` (이미 ${r.paid.toLocaleString('ko-KR')}원 납부)` : ''}`);
+      if (useT) lines.push(`· ${mm}월 교육비 ${r.tuition_due.toLocaleString('ko-KR')}원${r.discount ? ` (할인 ${r.discount.toLocaleString('ko-KR')}원 적용)` : ''}${r.extra ? ` (추가 수업 ${r.extra.toLocaleString('ko-KR')}원 포함)` : ''}${r.paid ? ` (이미 ${r.paid.toLocaleString('ko-KR')}원 납부)` : ''}`);
       if (useB) lines.push(`· 교재비 ${r.book_due.toLocaleString('ko-KR')}원${r.recent_books ? ` (${r.recent_books})` : ''}`);
       const text = (kind === 'tuition' ? st.tpl_bill_tuition : kind === 'book' ? st.tpl_bill_book : st.tpl_bill).replace(/\{([^{}]+)\}/g, (all, k) => ({ 학원: st.academy_name, 학생: r.name, 월: mm, 내역: lines.join('\n'), 합계: `${r.total.toLocaleString('ko-KR')}원`, 계좌: (() => { const t = st.bank_account || '', b = st.bank_account_book || ''; if (!t && !b) return '(학원으로 문의해 주세요)'; if (useT && useB && t && b && t !== b) return `\n· 교육비: ${t}\n· 교재비: ${b}`; if (useB && !useT) return b || t; return t || b; })() })[k] ?? all);
       modal({ title: `${r.name} ${KL[kind]} 청구서 미리 보기`, body: `<div class="preview">${h(text)}</div><p class="small muted">${KL[kind]} 청구서 문구는 [설정 → 청구서]에서 따로 바꿀 수 있어요.</p>` });
@@ -2751,6 +3119,7 @@
     settings: { render: pageSettings, owner: true },
     payimport: { render: pagePayImport, owner: true },
     bills: { render: pageBills, owner: true },
+    finance: { render: pageFinance, owner: true },
     books: { render: pageBooks },
     logs: { render: pageLogs },
     word: { render: pageWord },
