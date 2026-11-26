@@ -370,3 +370,24 @@ table.match select, table.match input[type=month], table.match input[type=text] 
 .score-shell .score-top .brand-mark { background: #fff; }
 .score-shell .score-top .small { font-size: 12px; opacity: .8; }
 .score-shell .main { max-width: 720px; margin: 0 auto; padding: 14px 14px 60px; }
+.paybtn { padding: 3px 9px; margin-left: 4px; font-size: 12px; }
+.paym label { padding: 8px 12px; }
+.ach-dot { display: inline-flex; width: 24px; height: 24px; border-radius: 50%; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; margin-right: 3px; }
+.ach-상 { background: #e6f4d6; color: #3f7d12; }
+.ach-중 { background: #fff3d6; color: #a06a00; }
+.ach-하 { background: #fde3e1; color: #b42318; }
+.rtabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.todo-item { display: flex; align-items: flex-start; gap: 10px; padding: 9px 2px; border-bottom: 1px solid #f0ede6; }
+.todo-item:last-child { border-bottom: 0; }
+.todo-check { width: 26px; height: 26px; border-radius: 8px; border: 2px solid var(--lime-2); background: #fff; flex: 0 0 auto; cursor: pointer; font-size: 15px; line-height: 1; color: #fff; padding: 0; }
+.todo-check.on { background: var(--lime); border-color: var(--lime); }
+.todo-item.done .todo-title { text-decoration: line-through; color: var(--muted); }
+.todo-title { font-weight: 600; }
+.todo-people { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.rt-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 8px 2px; border-bottom: 1px solid #f0ede6; }
+.rt-row:last-child { border-bottom: 0; }
+.rt-btns { display: flex; gap: 6px; }
+.slot-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.slot-pick label { border: 2px solid var(--line); border-radius: 12px; padding: 14px 10px; text-align: center; font-weight: 700; font-size: 16px; cursor: pointer; }
+.slot-pick label.on { background: var(--lime-soft); border-color: var(--lime); }
+.slot-pick input { display: none; }

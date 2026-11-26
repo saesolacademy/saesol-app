@@ -250,6 +250,9 @@ export const SCHEMA = [
     photo_v INTEGER,
     token TEXT,
     sent_at TEXT,
+    retest_at TEXT,
+    retest_memo TEXT,
+    retest_by INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
   // 교재 배부 내역
@@ -280,6 +283,33 @@ export const SCHEMA = [
     ref TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
+  // 할 일: scope academy(원장이 정한 학원 업무) / personal(내 할 일)
+  // repeat once(그날 하루, 못 하면 다음 날로 넘어감) / daily(매일) / weekly(고른 요일)
+  `CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL DEFAULT 'personal',
+    title TEXT NOT NULL,
+    memo TEXT,
+    assignee_id INTEGER,
+    repeat TEXT NOT NULL DEFAULT 'once',
+    days TEXT,
+    date TEXT,
+    needs_report INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS task_done (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    done_at TEXT NOT NULL DEFAULT (datetime('now')),
+    report TEXT,
+    report_status TEXT,
+    checked_at TEXT,
+    UNIQUE (task_id, user_id, date)
+  )`,
   `CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -299,6 +329,8 @@ export const SCHEMA = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_wt_token ON word_tests (token)`,
   `CREATE INDEX IF NOT EXISTS idx_pay_student ON payments (student_id, kind)`,
   `CREATE INDEX IF NOT EXISTS idx_students_family ON students (family_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_task_done ON task_done (user_id, date)`,
+  `CREATE INDEX IF NOT EXISTS idx_task_report ON task_done (report_status)`,
 ];
 
 export const DEFAULT_SETTINGS = {
@@ -331,6 +363,7 @@ export const DEFAULT_SETTINGS = {
     { name: '워드마스터 고등 숙어 1000', days: 50 },
   ]),
   tpl_word: '[{학원}] {학생} 단어시험 {차수}\n{교재} {범위}\n점수 {점수} ({결과})\n\n시험지 보기: {링크}',
+  tpl_word_retest: '[{학원}] {학생} 영어 단어 재시험 안내\n{일시}\n범위: {교재} {범위}{메모}\n꼭 준비해서 와 주세요!',
   bank_account: '',
   bank_account_book: '',
   tpl_bill_tuition: '[{학원}] {학생} 학생 {월}월 교육비 안내\n\n{내역}\n합계 {합계}\n\n입금 계좌: {계좌}\n이미 납부하셨다면 이 문자는 넘겨 주세요. 감사합니다.',
@@ -363,6 +396,9 @@ export const TEACHER_VIEW_LABELS = {
 };
 
 const MIGRATIONS = [
+  'ALTER TABLE word_tests ADD COLUMN retest_at TEXT',
+  'ALTER TABLE word_tests ADD COLUMN retest_memo TEXT',
+  'ALTER TABLE word_tests ADD COLUMN retest_by INTEGER',
   'ALTER TABLE users ADD COLUMN photo TEXT',
   'ALTER TABLE users ADD COLUMN photo_v INTEGER',
   'ALTER TABLE users ADD COLUMN staff_role TEXT',
@@ -379,9 +415,6 @@ const MIGRATIONS = [
   'ALTER TABLE class_logs ADD COLUMN extras TEXT',
   'ALTER TABLE enrollments ADD COLUMN fee INTEGER',
   'ALTER TABLE consultations ADD COLUMN subject TEXT',
-  // 영단어 시험: 회독(1~4)과 시험 유형(한글뜻/스펠링/혼합)
-  'ALTER TABLE word_tests ADD COLUMN round INTEGER',
-  'ALTER TABLE word_tests ADD COLUMN kind TEXT',
 ];
 
 let initialized = false;

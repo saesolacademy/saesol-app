@@ -296,6 +296,117 @@
   const reload = () => router();
 
   // ───────── 대시보드 ─────────
+  // ───────── 오늘 할 일 (대시보드) ─────────
+  const REPEAT_TXT = (t) => t.repeat === 'daily' ? '매일' : t.repeat === 'weekly' ? `매주 ${t.days}` : prettyDate(t.date);
+  function taskModal(t, scope, staff, done) {
+    const academy = scope === 'academy';
+    const days = (t && t.days ? t.days.split(',') : []);
+    modal({
+      title: t ? '할 일 고치기' : academy ? '학원 업무 추가' : '내 할 일 추가',
+      body: `
+        <label class="field"><span>할 일</span><input type="text" name="title" required value="${h(t ? t.title : '')}" placeholder="${academy ? '예: 교실 정리·소등 확인' : '예: 중2 시험지 출력'}"></label>
+        <label class="field"><span>자세한 내용 <span class="muted small">(없어도 돼요)</span></span><input type="text" name="memo" value="${h(t ? t.memo || '' : '')}"></label>
+        ${academy ? `<label class="field"><span>누가 하나요?</span><select name="assignee_id"><option value="">모든 선생님 (각자 해요)</option>${staff.map((u) => `<option value="${u.id}" ${t && t.assignee_id === u.id ? 'selected' : ''}>${h(u.name)}${u.role === 'owner' ? ' (원장)' : u.staff_role === 'manager' ? ' (감독)' : ''}</option>`).join('')}</select></label>` : ''}
+        <div class="field"><span>언제 하나요?</span>
+          <div class="seg"><label><input type="radio" name="repeat" value="once" ${!t || t.repeat === 'once' ? 'checked' : ''}> 하루만</label><label><input type="radio" name="repeat" value="daily" ${t && t.repeat === 'daily' ? 'checked' : ''}> 매일</label><label><input type="radio" name="repeat" value="weekly" ${t && t.repeat === 'weekly' ? 'checked' : ''}> 요일 고르기</label></div></div>
+        <label class="field" data-w="once"><span>날짜 <span class="muted small">(못 끝내면 다음 날로 넘어와요)</span></span><input type="date" name="date" value="${t ? t.date : todayStr()}"></label>
+        <div class="field" data-w="weekly"><span>요일</span><div class="days">${DAYS.map((x) => `<label class="${days.includes(x) ? 'on' : ''}"><input type="checkbox" name="wd" value="${x}" ${days.includes(x) ? 'checked' : ''}> ${x}</label>`).join('')}</div></div>
+        ${academy ? `<label class="field row" style="gap:8px"><input type="checkbox" name="needs_report" ${t && t.needs_report ? 'checked' : ''} style="width:auto"> <span><b>원장에게 보고가 필요한 업무</b><br><span class="small muted">끝낼 때 보고 내용을 적어야 하고, 원장님 대시보드에 "보고 도착" 알림이 떠요</span></span></label>` : ''}`,
+      onOpen: (f) => {
+        const sync = () => { const r = $('input[name=repeat]:checked', f).value; $$('[data-w]', f).forEach((x) => (x.style.display = x.dataset.w === r ? '' : 'none')); };
+        $$('input[name=repeat]', f).forEach((x) => (x.onchange = sync)); sync();
+        $$('input[name=wd]', f).forEach((c) => (c.onchange = () => c.parentElement.classList.toggle('on', c.checked)));
+      },
+      onSubmit: async (d, f) => {
+        const body = { scope, title: d.title, memo: d.memo, assignee_id: d.assignee_id, repeat: d.repeat, date: d.date, needs_report: !!d.needs_report, days: $$('input[name=wd]:checked', f).map((c) => c.value).join(',') };
+        if (t) await api('PATCH', `/api/tasks/${t.id}`, body); else await api('POST', '/api/tasks', body);
+        toast('저장했어요'); done();
+      },
+    });
+  }
+  function taskManageModal(scope, done) {
+    const academy = scope === 'academy';
+    modal({
+      title: academy ? '학원 업무 관리' : '내 할 일 관리', wide: true,
+      body: '<div id="tmList">불러오는 중…</div>',
+      onOpen: async (f, close) => {
+        const draw = async () => {
+          const r = await api('GET', '/api/tasks');
+          const list = academy ? r.academy : r.personal;
+          $('#tmList', f).innerHTML = `<button type="button" class="btn sm primary" id="tmAdd">＋ ${academy ? '학원 업무' : '할 일'} 추가</button>
+            ${list.length ? `<table class="list mt"><thead><tr><th>할 일</th>${academy ? '<th>담당</th>' : ''}<th>언제</th>${academy ? '<th>보고</th>' : ''}<th></th></tr></thead><tbody>${list.map((t) => `<tr>
+              <td><b>${h(t.title)}</b>${t.memo ? `<div class="small muted">${h(t.memo)}</div>` : ''}</td>${academy ? `<td style="white-space:nowrap">${h(t.assignee_name || '모든 선생님')}</td>` : ''}
+              <td style="white-space:nowrap">${REPEAT_TXT(t)}</td>${academy ? `<td>${t.needs_report ? '<span class="chip orange">보고</span>' : '-'}</td>` : ''}
+              <td style="text-align:right;white-space:nowrap"><button type="button" class="btn sm" data-tme="${t.id}">고치기</button> <button type="button" class="btn sm danger" data-tmd="${t.id}">삭제</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">아직 없어요</div>'}`;
+          $('#tmAdd', f).onclick = () => { close(); taskModal(null, scope, r.staff || [], () => { done(); taskManageModal(scope, done); }); };
+          $$('[data-tme]', f).forEach((b) => (b.onclick = () => { close(); taskModal(list.find((x) => x.id === Number(b.dataset.tme)), scope, r.staff || [], () => { done(); taskManageModal(scope, done); }); }));
+          $$('[data-tmd]', f).forEach((b) => (b.onclick = async () => { if (!confirm('이 할 일을 지울까요?')) return; await api('DELETE', `/api/tasks/${b.dataset.tmd}`); done(); draw(); }));
+        };
+        draw();
+      },
+    });
+  }
+  async function renderTodo(box) {
+    const d = await api('GET', '/api/tasks/today');
+    const owner = isOwner();
+    const draw = () => renderTodo(box);
+    const item = (t) => {
+      const dn = t.done;
+      const rep = t.scope === 'academy' && t.needs_report;
+      const state = !dn ? '' : rep ? (dn.report_status === 'checked' ? '<span class="chip green">✓ 원장님 확인</span>' : '<span class="chip orange">보고 완료 · 확인 기다리는 중</span>') : '<span class="chip green">완료</span>';
+      return `<div class="todo-item ${dn ? 'done' : ''}">
+        <button class="todo-check ${dn ? 'on' : ''}" data-tdone="${t.id}" data-date="${t.done_date}" title="${dn ? '완료 취소' : '완료'}">${dn ? '✓' : ''}</button>
+        <div style="flex:1"><div class="row" style="gap:6px"><span class="todo-title">${h(t.title)}</span>${rep ? '<span class="chip orange">보고 필요</span>' : ''}${t.late ? `<span class="chip red">${prettyDate(t.date)}부터 밀림</span>` : ''}${t.repeat !== 'once' ? `<span class="small muted">${REPEAT_TXT(t)}</span>` : ''}${state}</div>
+          ${t.memo ? `<div class="small muted">${h(t.memo)}</div>` : ''}${dn && dn.report ? `<div class="follow">📝 ${h(dn.report)}</div>` : ''}</div></div>`;
+    };
+    const academy = d.mine.filter((t) => t.scope === 'academy'), personal = d.mine.filter((t) => t.scope === 'personal');
+    const left = d.mine.filter((t) => !t.done).length;
+    const reports = d.reports || [];
+    const checkedNew = d.mine.filter((t) => t.done && t.done.report_status === 'checked' && t.done.checked_at && t.done_date === d.date);
+    const rts = await api('GET', '/api/word/retests').then((r) => r.retests.filter((t) => t.retest_at && t.retest_at.slice(0, 10) <= d.date)).catch(() => []);
+    box.innerHTML = `
+      ${rts.length ? `<div class="card" style="margin-bottom:14px"><div class="row"><h2 style="margin:0">🔤 오늘 영어 재시험 ${rts.length}명</h2><span class="space"></span><a class="btn sm" href="#/word">재시험 일정 전체 보기</a></div>${retestBoard(rts, true)}</div>` : ''}
+      ${reports.length ? `<div class="banner warn">📨 <b>보고 도착 ${reports.length}건</b> — 아래 "보고 도착"에서 확인해 주세요</div>` : ''}
+      <div class="grid ${owner ? 'g2' : ''}">
+        <div class="card">
+          <div class="row"><h2 style="margin:0">✅ 오늘 할 일</h2><span class="small muted">${left ? `${left}개 남음` : d.mine.length ? '다 했어요 👏' : ''}</span><span class="space"></span>
+            <button class="btn sm" id="tdMine">＋ 내 할 일</button></div>
+          ${academy.length ? `<div class="small muted mt">🏫 학원 업무</div>${academy.map(item).join('')}` : ''}
+          <div class="small muted mt">🙋 내 할 일 <a href="javascript:void 0" id="tdMineMng" class="small">관리</a></div>
+          ${personal.length ? personal.map(item).join('') : '<div class="small muted" style="padding:6px 2px">없어요. [＋ 내 할 일]로 추가해 보세요.</div>'}
+        </div>
+        ${owner ? `<div class="card">
+          <div class="row"><h2 style="margin:0">🏫 학원 업무 현황</h2><span class="space"></span><button class="btn sm primary" id="tdAcad">＋ 학원 업무</button><button class="btn sm" id="tdAcadMng">관리</button></div>
+          ${reports.length ? `<div class="mt"><b>📨 보고 도착</b>${reports.map((r) => `<div class="todo-item"><div style="flex:1"><div class="row" style="gap:6px">${withAvatar(r.user_id, r.user_photo_v, r.user_name, 20)}<b>${h(r.title)}</b><span class="small muted">${prettyDate(r.date)} ${prettyTime(r.done_at)}</span></div><div class="follow">📝 ${h(r.report || '')}</div></div><button class="btn sm primary" data-rchk="${r.id}">확인</button></div>`).join('')}</div>` : ''}
+          ${d.board.length ? `<div class="mt">${d.board.map((t) => `<div class="todo-item"><div style="flex:1">
+            <div class="row" style="gap:6px"><b>${h(t.title)}</b>${t.needs_report ? '<span class="chip orange">보고</span>' : ''}<span class="small muted">${REPEAT_TXT(t)}</span><span class="space"></span><span class="chip ${t.done_count === t.people.length && t.people.length ? 'green' : ''}">${t.done_count}/${t.people.length} 완료</span></div>
+            <div class="todo-people">${t.people.map((p) => `<span class="chip ${p.done ? (p.report_status === 'sent' ? 'orange' : 'green') : ''}">${p.done ? '✓' : '·'} ${h(p.name)}</span>`).join('') || '<span class="small muted">담당 선생님이 없어요</span>'}</div></div></div>`).join('')}</div>`
+            : '<div class="empty">오늘 정해 둔 학원 업무가 없어요. [＋ 학원 업무]로 선생님들 업무를 정해 보세요.</div>'}
+        </div>` : ''}
+      </div>`;
+    $$('[data-rgo]', box).forEach((b) => (b.onclick = () => (location.hash = `#/word?date=${todayStr()}&course=${b.dataset.course}&re=${b.dataset.rgo}`)));
+    $('#tdMine', box).onclick = () => taskModal(null, 'personal', [], draw);
+    $('#tdMineMng', box).onclick = () => taskManageModal('personal', draw);
+    if (owner) {
+      $('#tdAcad', box).onclick = () => taskModal(null, 'academy', d.staff, draw);
+      $('#tdAcadMng', box).onclick = () => taskManageModal('academy', draw);
+      $$('[data-rchk]', box).forEach((b) => (b.onclick = async () => { await api('POST', `/api/task-done/${b.dataset.rchk}/check`); toast('확인했어요'); draw(); }));
+    }
+    $$('[data-tdone]', box).forEach((b) => (b.onclick = async () => {
+      const t = d.mine.find((x) => x.id === Number(b.dataset.tdone));
+      if (t.done) { await api('DELETE', `/api/tasks/${t.id}/done?date=${b.dataset.date}`); return draw(); }
+      if (t.scope === 'academy' && t.needs_report) {
+        return modal({
+          title: `원장님께 보고 · ${t.title}`, submitText: '완료하고 보고 보내기',
+          body: `<label class="field"><span>어떻게 했는지 적어 주세요</span><textarea name="report" required placeholder="예: 3층 교실 정리 끝, 프린터 토너 부족해요"></textarea></label>`,
+          onSubmit: async (f) => { await api('POST', `/api/tasks/${t.id}/done`, { date: b.dataset.date, report: f.report }); toast('보고를 보냈어요'); draw(); },
+        });
+      }
+      await api('POST', `/api/tasks/${t.id}/done`, { date: b.dataset.date });
+      draw();
+    }));
+  }
+
   async function pageDashboard(el) {
     const d = await api('GET', '/api/dashboard');
     const s = d.stats;
@@ -312,6 +423,8 @@
         <div class="hero-who">${avatar(d.user.id, d.user.photo_v, d.user.name, 54)}<h1>${greet}</h1></div>
         ${d.mottos.length ? `<div class="mottos">${d.mottos.map((t, i) => `<div class="motto"><small>0${i + 1}</small><div>${h(t)}</div></div>`).join('')}</div>` : ''}
       </section>
+
+      <div id="todo" class="mt"></div>
 
       ${d.periods.length ? `<div class="grid g3 mt">${d.periods.map((p) => `
         <a class="card dcard ${p.phase}" href="#/feedback?period=${p.id}">
@@ -349,6 +462,7 @@
         </div>
       </div>`;
     $$('[data-go]', el).forEach((tr) => (tr.onclick = () => (location.hash = tr.dataset.go)));
+    renderTodo($('#todo', el)).catch((e) => ($('#todo', el).innerHTML = `<div class="card small muted">할 일을 불러오지 못했어요: ${h(e.message)}</div>`));
   }
 
   // ───────── 출결 알림 ─────────
@@ -588,117 +702,177 @@
         <div class="small muted" style="margin-bottom:8px">영어 반 ${all.courses.length}개${todayData.courses.length ? ` · 오늘 수업 ${todayData.courses.length}개는 앞에 있어요` : ''}</div>
         <div class="course-pick">${[...todayData.courses.map((c) => ({ ...c, today: true })), ...others].map((c) => `<button data-wc="${c.id}" class="${c.id === courseId ? 'on' : ''}"><b>${h(c.name)}</b><span class="small muted">${c.today ? `오늘 ${h(c.start_time || '')} · ` : ''}${h(c.teacher_name || '')}</span>${c.today ? '<span class="chip green" style="margin-top:4px">오늘</span>' : ''}</button>`).join('')}</div>
       </div>
+      <div class="card mt" id="rtCard" style="display:none"></div>
       <div id="wbox"></div>`;
     const go = (cid, dt = date) => (location.hash = `#/word?date=${dt}${cid ? `&course=${cid}` : ''}`);
+    const drawRt = async () => {
+      const { retests } = await api('GET', '/api/word/retests');
+      const card = $('#rtCard', el);
+      if (!card) return;
+      card.style.display = retests.length ? '' : 'none';
+      card.innerHTML = `<div class="row"><h2 style="margin:0">📅 재시험 일정</h2><span class="small muted">통과 못 한 학생 ${retests.length}명 · 내 영어 반 전체</span></div>${retestBoard(retests)}`;
+      $$('[data-rbook]', card).forEach((b) => (b.onclick = () => { const t = retests.find((x) => x.id === Number(b.dataset.rbook)); retestModal(t, t.student_name, () => { drawRt(); if (courseId) renderWordClass($('#wbox'), courseId, date); }); }));
+      $$('[data-rgo]', card).forEach((b) => (b.onclick = () => (location.hash = `#/word?date=${todayStr()}&course=${b.dataset.course}&re=${b.dataset.rgo}`)));
+    };
+    drawRt().catch(() => {});
+    window.__wordRefreshRt = drawRt;
     $('#wdate').onchange = (e) => go(courseId, e.target.value);
     $$('[data-wc]', el).forEach((b) => (b.onclick = () => go(b.dataset.wc)));
-    if (courseId) await renderWordClass($('#wbox'), courseId, date);
+    if (courseId) await renderWordClass($('#wbox'), courseId, date, Number(query.re) || null);
   }
 
-  async function renderWordClass(box, courseId, date) {
+  async function renderWordClass(box, courseId, date, openRe) {
     const d = await api('GET', `/api/word/class?course_id=${courseId}&date=${date}`);
-    const st = { book: (d.last && d.last.book) || '', range: (d.last && d.last.range) || '', total: (d.last && d.last.total) || 20, round: (d.last && d.last.round) || 1, kind: (d.last && d.last.kind) || '한글뜻' };
-    const kinds = d.word_kinds || { 한글뜻: 90, 스펠링: 80, 혼합: 90 };
-    const wLabel = (t) => [t.round ? `${t.round}회독` : '', t.kind || ''].filter(Boolean).join(' · ');
-    // 수업 있는 요일의 날짜들 (4주 전 ~ 2주 뒤)
-    const classDays = (d.course.days || '').split(',').filter(Boolean);
-    const classDates = [];
-    if (classDays.length) {
-      const base = new Date(date + 'T00:00:00');
-      for (let i = -28; i <= 14; i++) {
-        const x = new Date(base); x.setDate(x.getDate() + i);
-        const wd = '일월화수목금토'[x.getDay()];
-        if (classDays.includes(wd)) classDates.push({ v: `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`, label: `${x.getMonth() + 1}/${x.getDate()}(${wd})` });
-      }
-    }
+    const refresh = () => { renderWordClass(box, courseId, date); window.__wordRefreshRt && window.__wordRefreshRt().catch(() => {}); };
+    const st = { book: (d.last && d.last.book) || '', range: (d.last && d.last.range) || '', total: (d.last && d.last.total) || 20 };
     const books = [...new Set([...d.units.map((u) => u.book).filter(Boolean), ...d.word_books.map((b) => b.name)])];
     const byStu = new Map();
     for (const t of d.tests) { if (!byStu.has(t.student_id)) byStu.set(t.student_id, []); byStu.get(t.student_id).push(t); }
     const pendingBy = new Map(d.pending.map((t) => [t.student_id, t]));
-    const chip = (t) => `<span class="wchip ${t.passed ? 'ok' : 'no'}" data-wt="${t.id}" title="${h(wLabel(t))}">${t.range ? `<b>${h(t.range.replace(/^Day\s*/, 'D').replace(/^Unit\s*/, 'U'))}</b> ` : ''}${t.attempt > 1 ? '재 ' : ''}${t.score}/${t.total} ${t.passed ? '✓' : '✗'}${t.photo_v ? ' 📷' : ''}</span>`;
+    const chip = (t) => `<span class="wchip ${t.passed ? 'ok' : 'no'}" data-wt="${t.id}">${t.attempt > 1 ? '재 ' : ''}${t.score}/${t.total} ${t.passed ? '✓' : '✗'}${t.photo_v ? ' 📷' : ''}</span>`;
     const rangeOpts = () => {
       const fromUnits = d.units.filter((u) => u.book === st.book).map((u) => u.title);
       const wb = d.word_books.find((b) => b.name === st.book);
-      const days = wb ? Array.from({ length: wb.days }, (_, i) => `${wb.unit === 'Unit' ? 'Unit' : 'Day'} ${i + 1}`) : [];
+      const days = wb ? Array.from({ length: wb.days }, (_, i) => `Day ${i + 1}`) : [];
       return fromUnits.length ? fromUnits : days;
     };
     const draw = () => {
       const ro = rangeOpts();
-      // 범위는 Day 1개만. 예전 "Day 3~5" 같은 값은 첫 Day로 맞춰요
-      if (ro.length && !ro.includes(st.range)) { const m = (st.range || '').match(/^(.*?)~/); st.range = m && ro.includes(m[1]) ? m[1] : ro[0]; }
       box.innerHTML = `
         <div class="card mt">
           <div class="row"><h2 style="margin:0">${h(d.course.name)}</h2><span class="small muted">${prettyDate(date)}</span></div>
-          <div class="field mt"><span>📅 수업 날짜 ${classDays.length ? `(${classDays.join('·')}요일)` : ''}</span>
-            ${classDates.length ? `<div class="tabs" style="flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px">${classDates.map((x) => `<button type="button" class="btn sm ${x.v === date ? 'primary' : ''}" data-wdate="${x.v}" style="white-space:nowrap">${x.label}</button>`).join('')}</div>` : '<div class="small muted">[반 관리]에서 이 반의 수업 요일을 정하면 여기에 수업 날짜가 나와요. 지금은 위쪽 날짜 칸에서 골라 주세요.</div>'}</div>
-          <div class="field"><span>🔁 회독</span><div class="tabs">${Array.from({ length: d.word_rounds || 4 }, (_, i) => i + 1).map((n) => `<button type="button" class="btn sm ${st.round === n ? 'primary' : ''}" data-wround="${n}">${n}회독</button>`).join('')}</div></div>
-          <div class="field"><span>📝 시험 유형 · 통과 기준</span><div class="tabs">${Object.entries(kinds).map(([k, pct]) => `<button type="button" class="btn sm ${st.kind === k ? 'primary' : ''}" data-wkind="${k}">${k} <span class="small">(${pct}%)</span></button>`).join('')}</div></div>
           <div class="grid g3f mt">
             <label class="field"><span>교재</span><select id="wbook"><option value="">— 고르기 —</option>${books.map((b) => `<option ${st.book === b ? 'selected' : ''}>${h(b)}</option>`).join('')}<option value="__">직접 적기…</option></select></label>
-            <label class="field"><span>시험 범위 (${h(((d.word_books.find((b) => b.name === st.book) || {}).unit) || 'Day')} 1개)</span>${ro.length ? `<select id="wfrom">${ro.map((x) => `<option ${x === st.range ? 'selected' : ''}>${h(x)}</option>`).join('')}</select>` : `<input type="text" id="wrange" value="${h(st.range)}" placeholder="예: Day 1">`}</label>
-            <label class="field"><span>문항 수 · 통과 <b id="wpass">${Math.ceil((st.total * kinds[st.kind]) / 100)}</b>개 이상 (${kinds[st.kind]}%)</span><input type="number" id="wtotal" value="${st.total}" min="1" max="500" inputmode="numeric"></label>
+            <label class="field"><span>시험 범위</span>${ro.length ? `<div class="row" style="flex-wrap:nowrap"><select id="wfrom">${ro.map((x) => `<option>${h(x)}</option>`).join('')}</select><span class="muted">~</span><select id="wto"><option value="">(한 단원)</option>${ro.map((x) => `<option>${h(x)}</option>`).join('')}</select></div>` : `<input type="text" id="wrange" value="${h(st.range)}" placeholder="예: Day 1~2">`}</label>
+            <label class="field"><span>문항 수 · 통과 기준 ${d.pass_pct}%</span><input type="number" id="wtotal" value="${st.total}" min="1" max="500" inputmode="numeric"></label>
           </div>
           <div class="small muted">학생 이름을 누르면 채점 화면이 열려요. ✗는 불통이에요. 결과 칸을 누르면 시험지를 볼 수 있어요.</div>
         </div>
-        ${d.pending.length ? `<div class="card mt missbox"><h2>🔁 재시험 대기 (지난 수업)</h2>${d.pending.map((t) => `<div class="row wrow"><b>${h((d.students.find((x) => x.id === t.student_id) || {}).name || '')}</b><span class="small muted">${prettyDate(t.date)} · ${h(t.book || '')} ${h(t.range || '')}${wLabel(t) ? ' · ' + h(wLabel(t)) : ''}</span>${chip(t)}<span class="space"></span><button class="btn sm primary" data-re="${t.id}" data-sid="${t.student_id}">재시험</button></div>`).join('')}</div>` : ''}
+        ${d.pending.length ? `<div class="card mt missbox"><h2>🔁 재시험 대기 (지난 수업)</h2>${d.pending.map((t) => `<div class="row wrow"><b>${h((d.students.find((x) => x.id === t.student_id) || {}).name || '')}</b><span class="small muted">${prettyDate(t.date)} · ${h(t.book || '')} ${h(t.range || '')}</span>${chip(t)}${retestChip(t)}<span class="space"></span>${canBookRetest() ? `<button class="btn sm" data-rt="${t.id}">${t.retest_at ? '📅 바꾸기' : '📅 예약'}</button>` : ''}<button class="btn sm primary" data-re="${t.id}" data-sid="${t.student_id}">재시험</button></div>`).join('')}</div>` : ''}
         <div class="card mt"><div class="wlist">${d.students.map((s) => {
           const ts = byStu.get(s.id) || [];
-          // 지금 고른 Day·회독·유형의 시험만 보고 채점/재시험/통과를 정해요 (하루에 Day 여러 개를 쳐요)
-          const cur = ts.filter((t) => (t.range || '') === (st.range || '') && (t.round || null) === (st.round || null) && (t.kind || null) === (st.kind || null));
-          const last = cur[cur.length - 1];
+          const last = ts[ts.length - 1];
           const need = last && !last.passed;
           return `<div class="wrow">
             <button class="wname" data-stu="${s.id}">${sAvatar(s, 34)}<span><b>${h(s.name)}</b><span class="small muted"> ${h(s.grade || '')}</span>${s.has_phone ? '' : '<span class="small red-t"> · 학생 번호 없음</span>'}</span></button>
             <div class="chips">${ts.map(chip).join('')}</div>
             <span class="space"></span>
-            ${!last ? `<button class="btn sm primary" data-stu="${s.id}">채점</button>` : need ? `<button class="btn sm" style="border-color:var(--red);color:var(--red)" data-re="${last.id}" data-sid="${s.id}">재시험</button>` : '<span class="chip green">통과</span>'}
+            ${!ts.length ? `<button class="btn sm primary" data-stu="${s.id}">채점</button>` : need ? `${retestChip(last)}${canBookRetest() ? `<button class="btn sm" data-rt="${last.id}">${last.retest_at ? '📅' : '📅 예약'}</button>` : ''}<button class="btn sm" style="border-color:var(--red);color:var(--red)" data-re="${last.id}" data-sid="${s.id}">재시험</button>` : '<span class="chip green">통과</span>'}
           </div>`;
         }).join('') || '<div class="empty">이 반에 학생이 없어요</div>'}</div></div>`;
       const sync = () => {
         const bk = $('#wbook', box).value;
         if (bk && bk !== '__') st.book = bk;
-        if ($('#wfrom', box)) st.range = $('#wfrom', box).value;
+        if ($('#wfrom', box)) { const f = $('#wfrom', box).value, t = $('#wto', box).value; st.range = t && t !== f ? `${f}~${t.replace(/^Day /, '')}` : f; }
         if ($('#wrange', box)) st.range = $('#wrange', box).value.trim();
         st.total = Number($('#wtotal', box).value) || st.total;
       };
-      $$('[data-wdate]', box).forEach((b) => (b.onclick = () => (location.hash = `#/word?date=${b.dataset.wdate}&course=${courseId}`)));
-      $$('[data-wround]', box).forEach((b) => (b.onclick = () => { sync(); st.round = Number(b.dataset.wround); draw(); }));
-      $$('[data-wkind]', box).forEach((b) => (b.onclick = () => { sync(); st.kind = b.dataset.wkind; draw(); }));
-      $('#wtotal', box).oninput = (e) => { $('#wpass', box).textContent = Math.ceil(((Number(e.target.value) || 0) * kinds[st.kind]) / 100); };
       $('#wbook', box).onchange = (e) => {
         if (e.target.value === '__') { const v = prompt('교재 이름을 적어 주세요'); if (v) { st.book = v.trim(); books.push(st.book); } draw(); return; }
         st.book = e.target.value; st.range = ''; draw();
       };
       if ($('#wfrom', box)) {
-        $('#wfrom', box).onchange = () => { sync(); draw(); };
+        const m = st.range.match(/^(.*?)(?:~(\d+))?$/);
+        if (m && ro.includes(m[1])) { $('#wfrom', box).value = m[1]; if (m[2]) $('#wto', box).value = `Day ${m[2]}`; }
       }
-      $$('[data-stu]', box).forEach((b) => (b.onclick = () => { sync(); gradeModal(d, Number(b.dataset.stu), st, null, () => renderWordClass(box, courseId, date)); }));
+      $$('[data-stu]', box).forEach((b) => (b.onclick = () => { sync(); gradeModal(d, Number(b.dataset.stu), st, null, refresh); }));
       $$('[data-re]', box).forEach((b) => (b.onclick = () => {
         sync();
         const prev = [...d.tests, ...d.pending].find((t) => t.id === Number(b.dataset.re));
-        gradeModal(d, Number(b.dataset.sid), { book: prev.book, range: prev.range, total: prev.total, round: prev.round, kind: prev.kind }, prev, () => renderWordClass(box, courseId, date));
+        gradeModal(d, Number(b.dataset.sid), { book: prev.book, range: prev.range, total: prev.total }, prev, refresh);
       }));
-      $$('[data-wt]', box).forEach((c) => (c.onclick = () => { const t = [...d.tests, ...d.pending].find((x) => x.id === Number(c.dataset.wt)); wordViewModal(t, () => renderWordClass(box, courseId, date)); }));
+      $$('[data-rt]', box).forEach((b) => (b.onclick = () => {
+        const t = [...d.tests, ...d.pending].find((x) => x.id === Number(b.dataset.rt));
+        retestModal(t, (d.students.find((x) => x.id === t.student_id) || {}).name || '', refresh);
+      }));
+      $$('[data-wt]', box).forEach((c) => (c.onclick = () => { const t = [...d.tests, ...d.pending].find((x) => x.id === Number(c.dataset.wt)); wordViewModal(t, refresh); }));
     };
     draw();
+    if (openRe) {
+      const prev = [...d.tests, ...d.pending].find((t) => t.id === openRe);
+      if (prev) gradeModal(d, prev.student_id, { book: prev.book, range: prev.range, total: prev.total }, prev, refresh);
+      history.replaceState(null, '', location.hash.replace(/&re=\d+/, ''));
+    }
+  }
+
+  // ── 재시험 예약
+  const retestLabel = (at) => { if (!at) return ''; const [d, t] = at.split(' '); if (!t) return `${prettyDate(d)} 기타`; const [hh, mm] = t.split(':').map(Number); return `${prettyDate(d)} ${hh < 12 ? '오전' : '오후'} ${hh % 12 || 12}시${mm ? ` ${mm}분` : ''}`; };
+  const retestChip = (t) => (t.retest_at ? `<span class="chip ${t.retest_at.slice(0, 10) < todayStr() ? 'red' : t.retest_at.slice(0, 10) === todayStr() ? 'orange' : 'blue'}">📅 ${h(retestLabel(t.retest_at))}${t.retest_at.slice(0, 10) < todayStr() ? ' · 지남' : ''}</span>` : '');
+  // 재시험 일정은 선생님만 정해요 (원장·감독은 보기만)
+  const canBookRetest = () => state.me && state.me.role === 'teacher' && !isManager();
+  const RETEST_SLOTS = [['16:30', '4시 30분'], ['17:30', '5시 30분'], ['19:30', '7시 30분'], ['etc', '기타']];
+  function retestModal(t, name, done) {
+    if (!canBookRetest()) return;
+    const ymd = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+    const addD = (d, n) => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + n); return ymd(x); };
+    // 1차(본시험 불통) → 다음 날 네 칸 / 금요일 시험 → 날짜 고르기 + 네 칸 / 2차 재시험부터 → 날짜·시간 자유
+    const mode = t.attempt >= 2 ? 'free' : new Date(t.date + 'T00:00:00').getDay() === 5 ? 'pickday' : 'fixed';
+    const next = addD(t.date, 1);
+    const [cd, ct] = t.retest_at ? t.retest_at.split(' ') : ['', ''];
+    const cur = t.retest_at ? (ct || 'etc') : '';
+    const defDay = cd || (mode === 'pickday' ? addD(t.date, 3) : next); // 금요일이면 기본은 다음 주 월요일
+    const slots = `<div class="slot-pick mt">${RETEST_SLOTS.map(([v, l]) => `<label class="${cur === v ? 'on' : ''}"><input type="radio" name="slot" value="${v}" ${cur === v ? 'checked' : ''}>${v === 'etc' ? '' : '오후 '}${l}</label>`).join('')}</div>
+        <label class="field mt" id="rtMemo" style="${cur === 'etc' ? '' : 'display:none'}"><span>기타 메모 <span class="muted small">(시간·장소 등)</span></span><input type="text" name="memo" value="${h(cur === 'etc' ? t.retest_memo || '' : '')}" placeholder="예: 오전 11시, 2층 자습실"></label>`;
+    const when = mode === 'fixed' ? `<div class="mt"><b>${prettyDate(next)}</b> <span class="small muted">· 시험 본 다음 날</span></div>${slots}`
+      : mode === 'pickday' ? `<div class="small mt" style="color:var(--orange)">금요일 시험이라 날짜를 골라 주세요 (다음 날이 토요일이에요)</div>
+          <label class="field mt"><span>날짜</span><input type="date" name="date" value="${defDay}" min="${next}" required></label>${slots}`
+      : `<div class="small mt muted">다음은 ${t.attempt}차 재시험이에요 · 날짜와 시간을 자유롭게 정해 주세요</div>
+          <div class="grid g2 mt"><label class="field"><span>날짜</span><input type="date" name="date" value="${defDay}" min="${t.date}" required></label>
+          <label class="field"><span>시간</span><input type="time" name="time" value="${ct || '16:30'}" step="600" required></label></div>
+          <label class="field"><span>메모 <span class="muted small">(없어도 돼요)</span></span><input type="text" name="memo" value="${h(t.retest_memo || '')}" placeholder="예: 원장실에서 1:1로"></label>`;
+    modal({
+      title: `${name} 재시험 예약`, submitText: t.retest_at ? '예약 바꾸기' : '예약하기',
+      body: `<div class="small muted">${h(t.book || '')} ${h(t.range || '')} · ${t.attempt > 1 ? `${t.attempt - 1}차 재시험` : '본시험'} 결과 ${t.score}/${t.total} ✗ (${prettyDate(t.date)})</div>
+        ${when}
+        <label class="inline-check mt"><input type="checkbox" name="notify" checked> 학생에게 재시험 안내 문자 보내기</label>`,
+      foot: t.retest_at ? '<button type="button" class="btn sm danger" id="rtDel">예약 취소</button>' : '',
+      onOpen: (f, close) => {
+        $$('input[name=slot]', f).forEach((r) => (r.onchange = () => {
+          $$('.slot-pick label', f).forEach((l) => l.classList.toggle('on', $('input', l).checked));
+          $('#rtMemo', f).style.display = r.value === 'etc' ? '' : 'none';
+          if (r.value === 'etc') $('input[name=memo]', f).focus();
+        }));
+        if ($('#rtDel', f.parentElement)) $('#rtDel', f.parentElement).onclick = async () => { if (!confirm('재시험 예약을 취소할까요?')) return; await api('DELETE', `/api/word/tests/${t.id}/retest`); close(); toast('예약을 취소했어요'); done && done(); };
+      },
+      onSubmit: async (d) => {
+        if (mode !== 'free') {
+          if (!d.slot) throw new Error('재시험 시간을 골라 주세요');
+          if (d.slot === 'etc' && !String(d.memo || '').trim()) throw new Error('기타를 골랐으면 메모를 적어 주세요');
+        }
+        const r = await api('PUT', `/api/word/tests/${t.id}/retest`, { date: d.date, time: d.time, slot: d.slot, memo: mode === 'free' || d.slot === 'etc' ? d.memo : '', notify: !!d.notify });
+        toast(`${name} 재시험: ${retestLabel(r.retest_at)}${r.sent ? ` · 문자 ${r.sent}` : ''}`);
+        done && done();
+      },
+    });
+  }
+  // 재시험 일정 카드 (채점 화면 위·대시보드)
+  function retestBoard(list, compact) {
+    const td = todayStr();
+    const groups = [
+      ['🔔 오늘', list.filter((t) => t.retest_at && t.retest_at.slice(0, 10) === td)],
+      ['⚠ 날짜가 지났는데 아직 안 침', list.filter((t) => t.retest_at && t.retest_at.slice(0, 10) < td)],
+      ['📅 앞으로', list.filter((t) => t.retest_at && t.retest_at.slice(0, 10) > td)],
+      ['❔ 아직 예약 안 함', list.filter((t) => !t.retest_at)],
+    ].filter(([, l]) => l.length && (!compact || true));
+    const row = (t) => `<div class="rt-row"><div><div style="word-break:keep-all"><b style="white-space:nowrap">${h(t.student_name || '')}</b> <span style="white-space:nowrap">${t.retest_at ? `📅 ${h(t.retest_at.slice(0, 10) === td ? retestLabel(t.retest_at).replace(/^.*\) /, '') : retestLabel(t.retest_at))}` : ''}</span></div>
+      <div class="small muted">${h(t.course_name || '')} · ${h(t.book || '')} ${h(t.range || '')} · ${t.score}/${t.total} ✗${t.retest_memo ? ` · ${h(t.retest_memo)}` : ''}</div></div>
+      <div class="rt-btns">${compact || !canBookRetest() ? '' : `<button class="btn sm" data-rbook="${t.id}">${t.retest_at ? '바꾸기' : '📅 예약'}</button>`}<button class="btn sm primary" data-rgo="${t.id}" data-course="${t.course_id || ''}">채점</button></div></div>`;
+    return groups.map(([g, l]) => `<div class="small muted mt"><b>${g}</b> ${l.length}명</div>${(compact && g.startsWith('📅') ? l.slice(0, 5) : l).map(row).join('')}`).join('');
   }
 
   function gradeModal(d, sid, st, retestOf, done) {
     const s = d.students.find((x) => x.id === sid) || { name: '' };
     let score = retestOf ? retestOf.score : st.total;
     let photo = null;
-    const kinds = d.word_kinds || { 한글뜻: 90, 스펠링: 80, 혼합: 90 };
-    const pct = st.kind && kinds[st.kind] ? kinds[st.kind] : d.pass_pct;
-    const passOf = (total) => Math.ceil((total * pct) / 100);
-    const label = [st.round ? `${st.round}회독` : '', st.kind || ''].filter(Boolean).join(' · ');
+    const passOf = (total) => Math.ceil((total * d.pass_pct) / 100);
     modal({
       title: `${s.name} ${retestOf ? '재시험' : '단어시험'} 채점`, wide: true, submitText: '저장하고 보내기',
       body: `
-        <div class="small muted">${h(st.book || '교재 미선택')} · ${h(st.range || '범위 미선택')}${label ? ` · <b>${h(label)}</b>` : ''}${retestOf ? ` · 지난 결과 ${retestOf.score}/${retestOf.total} ✗` : ''}</div>
+        <div class="small muted">${h(st.book || '교재 미선택')} · ${h(st.range || '범위 미선택')}${retestOf ? ` · 지난 결과 ${retestOf.score}/${retestOf.total} ✗` : ''}</div>
         <label class="photo-btn mt"><input type="file" accept="image/*" capture="environment" id="wph" hidden><span id="wphTxt">📷 채점한 시험지 찍기</span><img id="wprev" hidden></label>
         <div class="grid g2 mt">
           <label class="field"><span>문항 수</span><input type="number" name="total" value="${st.total}" min="1" inputmode="numeric"></label>
-          <label class="field"><span>통과 기준 (맞은 개수 · ${pct}% 고정)</span><input type="number" name="pass_score" value="${passOf(st.total)}" min="0" inputmode="numeric" ${st.kind ? 'readonly style="background:#f3f5ef"' : ''}></label>
+          <label class="field"><span>통과 기준 (맞은 개수)</span><input type="number" name="pass_score" value="${passOf(st.total)}" min="0" inputmode="numeric"></label>
         </div>
         <div class="scorebox">
           <button type="button" class="btn" data-d="-1">−</button>
@@ -739,12 +913,13 @@
       },
       onSubmit: async (fd) => {
         const r = await api('POST', '/api/word/tests', {
-          student_id: sid, course_id: d.course.id, date: d.date, book: st.book, range: st.range, round: st.round, kind: st.kind,
+          student_id: sid, course_id: d.course.id, date: d.date, book: st.book, range: st.range,
           total: fd.total, score, pass_score: fd.pass_score, memo: fd.memo, photo, send: !!fd.send, retest_of: retestOf ? retestOf.id : null,
         });
         const sent = r.sent.length ? ` · 보냄: ${r.sent.map((x) => `${x.to} ${x.status}`).join(', ')}` : '';
         toast(`${s.name} ${r.passed ? '통과 ✓' : '불통 ✗ (재시험 필요)'}${sent}`);
         done && done();
+        if (!r.passed && canBookRetest()) setTimeout(() => retestModal({ id: r.id, book: st.book, range: st.range, score, total: Number(fd.total), date: d.date, attempt: r.attempt }, s.name, done), 300);
       },
     });
   }
@@ -753,7 +928,7 @@
     modal({
       title: `단어시험 ${t.attempt > 1 ? '재시험' : '본시험'} · ${prettyDate(t.date)}`,
       body: `<div class="row"><b style="font-size:24px">${t.score} / ${t.total}</b>${t.passed ? '<span class="chip green">통과</span>' : `<span class="chip red">불통 (기준 ${t.pass_score})</span>`}</div>
-        <div class="small muted">${h(t.book || '')} ${h(t.range || '')}${t.round ? ` · ${t.round}회독` : ''}${t.kind ? ` · ${h(t.kind)}` : ''} · ${h(t.teacher_name || '')}${t.sent_at ? ' · 보냄 ' + prettyTime(t.sent_at) : ''}</div>
+        <div class="small muted">${h(t.book || '')} ${h(t.range || '')} · ${h(t.teacher_name || '')}${t.sent_at ? ' · 보냄 ' + prettyTime(t.sent_at) : ''}</div>
         ${t.memo ? `<p>${h(t.memo)}</p>` : ''}
         ${t.photo_v ? `<img src="/api/word/photos/${t.id}?v=${t.photo_v}" style="width:100%;border-radius:10px;margin-top:10px">` : '<p class="muted small">시험지 사진이 없어요</p>'}`,
       foot: `<button type="button" class="btn sm danger" id="wdel">기록 지우기</button>`,
@@ -1337,6 +1512,32 @@
       <label class="field"><span>특이사항 메모</span><textarea name="memo">${h(s.memo)}</textarea></label>`;
   }
 
+  // 수납 기록 창 (학생 명부·학생 카드에서 함께 써요). 결제 방법은 여러 개 고를 수 있어요(나눠 낸 경우).
+  const PAY_METHODS = { 교육비: ['계좌', '영주사랑 모바일', '영주사랑 상품권', '신용카드', '현금'], 교재비: ['계좌', '현금'] };
+  function payModal({ sid, name, kind, amount, month, sub, done }) {
+    modal({
+      title: `${name ? name + ' · ' : ''}${kind} 수납`,
+      submitText: '수납 기록하기',
+      body: `${sub ? `<div class="small muted" style="margin-bottom:8px">${sub}</div>` : ''}
+        ${kind === '교육비' ? `<label class="field"><span>몇 월 교육비인가요?</span><input type="month" name="month" value="${month || thisMonth()}" required></label>` : ''}
+        <div class="grid g2"><label class="field"><span>받은 금액</span><input type="text" name="amount" inputmode="numeric" required value="${amount || ''}"></label>
+        <label class="field"><span>받은 날</span><input type="date" name="paid_date" value="${todayStr()}" required></label></div>
+        <div class="field"><span>결제 방법 <span class="muted small">(나눠 냈으면 여러 개 눌러 주세요)</span></span>
+          <div class="days paym">${PAY_METHODS[kind].map((m, i) => `<label class="${i ? '' : 'on'}"><input type="checkbox" name="pm" value="${m}" ${i ? '' : 'checked'}> ${m}</label>`).join('')}</div></div>
+        <label class="field"><span>메모 <span class="muted small">${kind === '교재비' ? '(어떤 교재인지, 입금자 이름 등)' : '(입금자 이름, 나눠 낸 금액 등)'}</span></span><input type="text" name="memo" placeholder="${kind === '교재비' ? '예: 쎈 중2-1, 엄마 이름으로 입금' : '예: 영주사랑 20만 + 카드 10만'}"></label>`,
+      onOpen: (f) => {
+        $$('.paym input', f).forEach((c) => (c.onchange = () => c.parentElement.classList.toggle('on', c.checked)));
+      },
+      onSubmit: async (d, f) => {
+        const methods = $$('.paym input:checked', f).map((c) => c.value);
+        if (!methods.length) throw new Error('결제 방법을 하나 이상 눌러 주세요');
+        await api('POST', `/api/students/${sid}/payments`, { kind, month: d.month, amount: d.amount, paid_date: d.paid_date, memo: d.memo, methods });
+        toast(`${name || ''} ${kind} ${won(Number(String(d.amount).replace(/[^\d]/g, '')))} 기록했어요`);
+        done && done();
+      },
+    });
+  }
+
   async function pageStudents(el, parts, query) {
     if (parts[0]) return pageStudent(el, Number(parts[0]));
     const st = query.status ?? '재원';
@@ -1367,8 +1568,8 @@
             ${view.birth ? `<td class="small" style="white-space:nowrap">${h(s.birth_date || '')}</td>` : ''}
             <td class="small" style="min-width:180px">${h(s.courses || '-')}</td>
             ${view.parents ? `<td class="small" style="white-space:nowrap">${h(fmtPhone(s.mother_phone)) || '-'}<br>${h(fmtPhone(s.father_phone)) || '-'}</td>` : ''}
-            ${showT ? `<td style="white-space:nowrap">${tChip(s.tuition)}</td>` : ''}
-            ${showB ? `<td>${s.book_due ? `<span class="chip red">${won(s.book_due)} 미납</span>` : s.book_total ? '<span class="chip green">정산</span>' : '<span class="muted small">-</span>'}</td>` : ''}
+            ${showT ? `<td style="white-space:nowrap">${tChip(s.tuition)}${isOwner() && s.tuition ? ` <button class="btn sm paybtn" data-payt="${s.id}">수납</button>` : ''}</td>` : ''}
+            ${showB ? `<td style="white-space:nowrap">${s.book_due ? `<span class="chip red">${won(s.book_due)} 미납</span>` : s.book_total ? '<span class="chip green">정산</span>' : '<span class="muted small">-</span>'}${isOwner() ? ` <button class="btn sm paybtn" data-payb="${s.id}">수납</button>` : ''}</td>` : ''}
             <td>${statusChip(s.status)}${s.has_phone ? '' : ' <span class="chip red">번호 없음</span>'}</td></tr>`).join('')}</tbody>
         </table></div>
         ${list.length ? `<div class="small muted mt">${list.length}명${query.unpaid ? ' (미납만)' : ''}${st === '' ? ` (재원 ${count('재원')} · 휴원 ${count('휴원')} · 퇴원 ${count('퇴원')})` : ''}</div>` : '<div class="empty">학생이 없어요</div>'}
@@ -1381,6 +1582,18 @@
     if ($('#unpaid')) $('#unpaid').onchange = (e) => go({ unpaid: e.target.checked ? '1' : '' });
     $('#filter').onsubmit = (e) => { e.preventDefault(); go({ q: new FormData(e.target).get('q') }); };
     $$('tr[data-id]', el).forEach((tr) => (tr.onclick = () => (location.hash = `#/students/${tr.dataset.id}`)));
+    const byS = new Map(students.map((x) => [x.id, x]));
+    const refresh = () => router();
+    $$('[data-payt]', el).forEach((b) => (b.onclick = (e) => {
+      e.stopPropagation();
+      const x = byS.get(Number(b.dataset.payt));
+      payModal({ sid: x.id, name: x.name, kind: '교육비', month, amount: x.tuition.due || '', sub: x.tuition.fee ? `${Number(month.slice(5))}월 수강료 ${won(x.tuition.fee)} 중 ${won(x.tuition.paid)} 받음${x.tuition.due ? ` · <b class="red-t">${won(x.tuition.due)} 남음</b>` : ''}` : '', done: refresh });
+    }));
+    $$('[data-payb]', el).forEach((b) => (b.onclick = (e) => {
+      e.stopPropagation();
+      const x = byS.get(Number(b.dataset.payb));
+      payModal({ sid: x.id, name: x.name, kind: '교재비', amount: x.book_due || '', sub: x.book_due ? `교재비 <b class="red-t">${won(x.book_due)} 미납</b>${x.recent_books ? ` · ${h(x.recent_books)}` : ''}` : '', done: refresh });
+    }));
     if (!canEditStudents()) return;
     $('#add').onclick = () => modal({ title: '학생 등록', wide: true, body: studentForm({ status: '재원' }), onSubmit: async (d) => { const r = await api('POST', '/api/students', d); toast('등록했어요'); location.hash = `#/students/${r.id}`; } });
     $('#bulk').onclick = () => {
@@ -1486,7 +1699,7 @@
     for (const f of d.feedbacks) tl.push({ type: '피드백', date: (f.sent_at || f.updated_at || '').slice(0, 10), subject: f.subject, html: `<div class="row"><b>${h(f.period_title)}</b>${statusChip(f.status)}</div><div class="content small">${h(f.content)}</div>` });
     for (const b of d.books || []) tl.push({ type: '교재', date: b.date, subject: b.subject || '공통', html: `<div class="row">${b.book_id ? bookImg(b.book_id, b.book_image_v, 26) : ''}<b>${h(b.title)}</b><span class="small muted">${b.qty}권 · ${won(b.price)} · ${h(b.given_by_name || '')}</span></div>` });
     for (const p of [...(d.tuition || []), ...(d.bookpay || [])]) tl.push({ type: '수납', date: p.paid_date, subject: '공통', html: `<div class="row"><b>${h(p.kind)}</b>${p.month ? `<span class="small muted">${h(p.month)}분</span>` : ''}<b>${won(p.amount)}</b><span class="small muted">${h(p.method || '')} ${h(p.memo || '')}</span></div>` });
-    for (const w of d.words || []) tl.push({ type: '단어시험', date: w.date, subject: '영어', html: `<div class="row"><span class="wchip ${w.passed ? 'ok' : 'no'}">${w.attempt > 1 ? '재시험 ' : ''}${w.score}/${w.total} ${w.passed ? '✓ 통과' : '✗ 불통'}</span><span class="small muted">${h(w.book || '')} ${h(w.range || '')}${w.round ? ` · ${w.round}회독` : ''}${w.kind ? ` · ${h(w.kind)}` : ''} · ${h(w.teacher_name || '')}</span>${w.photo_v ? `<a href="/api/word/photos/${w.id}?v=${w.photo_v}" target="_blank" class="small">📷 시험지</a>` : ''}</div>${w.memo ? `<div class="small">${h(w.memo)}</div>` : ''}` });
+    for (const w of d.words || []) tl.push({ type: '단어시험', date: w.date, subject: '영어', html: `<div class="row"><span class="wchip ${w.passed ? 'ok' : 'no'}">${w.attempt > 1 ? '재시험 ' : ''}${w.score}/${w.total} ${w.passed ? '✓ 통과' : '✗ 불통'}</span><span class="small muted">${h(w.book || '')} ${h(w.range || '')} · ${h(w.teacher_name || '')}</span>${w.photo_v ? `<a href="/api/word/photos/${w.id}?v=${w.photo_v}" target="_blank" class="small">📷 시험지</a>` : ''}</div>${w.memo ? `<div class="small">${h(w.memo)}</div>` : ''}` });
     for (const b of d.bills || []) tl.push({ type: '청구서', date: (b.sent_at || '').slice(0, 10), subject: '공통', html: `<div class="row"><b>${Number(b.month.slice(5))}월 ${b.kind === 'book' ? '교재비' : b.kind === 'tuition' ? '교육비' : ''} 청구서 ${won(b.total)}</b>${statusChip(b.status)}<span class="small muted">${h(b.sent_by_name || '')}</span></div>` });
     for (const x of d.subjects || []) {
       if (x.start_date) tl.push({ type: '등록·퇴원', date: x.start_date, subject: x.subject, html: `<div class="row"><b>${h(x.subject)} 등록</b></div>` });
@@ -1521,6 +1734,31 @@
       tile('🚨 이탈 신호', openFlags.length ? `${openFlags.length}건` : '없음', openFlags.length ? h(openFlags[0].reason) : '걱정 표시 없음', openFlags.length ? 'warn' : ''),
     ].filter(Boolean);
 
+    // ── 학습 기록: 성취도 누적(강사·날짜) / 숙제 30일 / 상담 누적
+    const achList = (d.achieves || []).filter((x) => x.achieve);
+    const hw30 = (d.achieves || []).filter((x) => x.hw && x.date >= since30);
+    const achTeachers = [...new Map(achList.map((x) => [x.teacher_id, x.teacher_name])).entries()];
+    const achCount = (list) => ['상', '중', '하'].map((k) => `<span class="ach-dot ach-${k}">${k}</span>${list.filter((x) => x.achieve === k).length}번`).join(' &nbsp; ');
+    const achRows = (list) => list.map((x) => `<tr data-ateacher="${x.teacher_id || ''}"><td style="white-space:nowrap">${prettyDate(x.date)}</td><td><span class="ach-dot ach-${h(x.achieve)}">${h(x.achieve)}</span></td>
+        <td style="white-space:nowrap"><span class="chip">${h(x.subject)}</span> ${h(x.course_name)}</td><td style="white-space:nowrap">${withAvatar(x.teacher_id, x.teacher_photo_v, x.teacher_name || '-', 20)}</td><td class="small">${h(x.note || '')}</td></tr>`).join('');
+    const achHtml = achList.length ? `
+        <div class="row small"><span>모두 ${achList.length}번 · ${achCount(achList)}</span><span class="space"></span>
+          <span class="muted">최근 흐름</span> ${achList.slice(0, 12).reverse().map((x) => `<span class="ach-dot ach-${h(x.achieve)}" title="${h(x.date)} ${h(x.teacher_name || '')}">${h(x.achieve)}</span>`).join('')}</div>
+        ${achTeachers.length > 1 ? `<div class="rtabs no-print mt"><button class="btn sm primary" data-ateach="">모든 선생님</button>${achTeachers.map(([tid, tn]) => `<button class="btn sm" data-ateach="${tid || ''}">${h(tn || '-')} ${achList.filter((x) => x.teacher_id === tid).length}</button>`).join('')}</div>` : ''}
+        <div class="table-wrap mt"><table class="list"><thead><tr><th>날짜</th><th>성취도</th><th>반</th><th>선생님</th><th>선생님 메모</th></tr></thead><tbody id="achBody">${achRows(achList)}</tbody></table></div>`
+      : '<div class="empty">아직 성취도 기록이 없어요. 선생님이 수업 일지에서 상·중·하를 누르면 여기에 쌓여요.</div>';
+    const hwHtml = hw30.length ? `
+        <div class="small">최근 30일 숙제 검사 ${hw30.length}번 · ${['○', '△', '×'].map((k) => `${k} ${hw30.filter((x) => x.hw === k).length}번`).join(' · ')}</div>
+        <div class="table-wrap mt"><table class="list"><thead><tr><th>날짜</th><th>숙제</th><th>반</th><th>선생님</th><th>메모</th></tr></thead><tbody>${hw30.map((x) => `<tr><td style="white-space:nowrap">${prettyDate(x.date)}</td>
+          <td><span class="chip ${x.hw === '×' ? 'red' : x.hw === '△' ? 'orange' : 'green'}">${h(x.hw)}</span></td><td style="white-space:nowrap"><span class="chip">${h(x.subject)}</span> ${h(x.course_name)}</td>
+          <td style="white-space:nowrap">${withAvatar(x.teacher_id, x.teacher_photo_v, x.teacher_name || '-', 20)}</td><td class="small">${h(x.note || '')}</td></tr>`).join('')}</tbody></table></div>`
+      : '<div class="empty">최근 30일 동안 숙제 검사 기록이 없어요</div>';
+    const conHtml = d.consultations.length ? d.consultations.map((k) => `
+        <div class="todo-item"><div style="min-width:96px" class="small"><b>${prettyDate(k.date)}</b></div><div style="flex:1">
+          <div class="row" style="gap:6px"><span class="chip">${h(k.kind)}</span>${k.subject ? `<span class="chip">${h(k.subject)}</span>` : ''}${withAvatar(k.teacher_id, k.teacher_photo_v, k.teacher_name, 20)}</div>
+          <div style="white-space:pre-wrap;margin-top:4px">${h(k.content)}</div>${k.follow_up ? `<div class="follow ${k.follow_up_done ? 'done' : ''}">📌 ${h(k.follow_up)}</div>` : ''}</div></div>`).join('')
+      : '<div class="empty">상담 기록이 없어요. 위의 [💬 상담 기록]으로 남겨 주세요.</div>';
+
     const payTable = (list, kind) => list.length ? `<table class="list"><thead><tr>${kind === '교육비' ? '<th>해당 월</th>' : '<th>내용</th>'}<th>납부일</th><th>금액</th><th>방법</th>${own ? '<th></th>' : ''}</tr></thead><tbody>${list.map((p) => `
         <tr><td>${kind === '교육비' ? h(p.month) : h(p.memo || '-')}</td><td>${h(p.paid_date)}</td><td><b>${won(p.amount)}</b></td><td>${h(p.method || '')}${kind === '교육비' && p.memo ? `<div class="small muted">${h(p.memo)}</div>` : ''}</td>
         ${own ? `<td style="text-align:right"><button class="btn sm danger no-print" data-delpay="${p.id}">삭제</button></td>` : ''}</tr>`).join('')}</tbody></table>` : '<div class="empty">수납 기록이 없어요</div>';
@@ -1547,6 +1785,18 @@
       </div>
 
       <div class="glance mt">${tiles.join('')}</div>
+
+      <div class="card mt" id="recCard">
+        <div class="row"><h2 style="margin:0">학습 기록</h2><span class="space"></span>
+          <div class="rtabs no-print">
+            <button class="btn sm primary" data-rtab="ach">📈 성취도 누적 ${achList.length}</button>
+            <button class="btn sm" data-rtab="hw">✏️ 숙제 (최근 30일) ${hw30.length}</button>
+            <button class="btn sm" data-rtab="con">💬 상담 누적 ${d.consultations.length}</button>
+          </div></div>
+        <div class="mt" data-rpane="ach">${achHtml}</div>
+        <div class="mt" data-rpane="hw" style="display:none">${hwHtml}</div>
+        <div class="mt" data-rpane="con" style="display:none">${conHtml}</div>
+      </div>
 
       <div class="grid g2 mt">
         <div class="card"><h2>인적사항</h2>
@@ -1619,6 +1869,14 @@
     $$('[data-tltype]', el).forEach((b) => (b.onclick = () => { $$('[data-tltype]', el).forEach((x) => x.classList.toggle('primary', x === b)); tlFilter.type = b.dataset.tltype; applyTl(); }));
     $$('[data-tlsub]', el).forEach((b) => (b.onclick = () => { $$('[data-tlsub]', el).forEach((x) => x.classList.toggle('primary', x === b)); tlFilter.sub = b.dataset.tlsub; applyTl(); }));
 
+    $$('[data-rtab]', el).forEach((b) => (b.onclick = () => {
+      $$('[data-rtab]', el).forEach((x) => x.classList.toggle('primary', x === b));
+      $$('[data-rpane]', el).forEach((p) => (p.style.display = p.dataset.rpane === b.dataset.rtab ? '' : 'none'));
+    }));
+    $$('[data-ateach]', el).forEach((b) => (b.onclick = () => {
+      $$('[data-ateach]', el).forEach((x) => x.classList.toggle('primary', x === b));
+      $$('#achBody tr', el).forEach((tr) => (tr.style.display = !b.dataset.ateach || tr.dataset.ateacher === b.dataset.ateach ? '' : 'none'));
+    }));
     $('#photoBtn').onclick = () => pickStudentPhoto(id, reload);
     $('#consult').onclick = () => consultModal({ student_id: id });
     $('#flag').onclick = () => flagModal(id);
@@ -1699,15 +1957,7 @@
     $$('[data-unsib]', el).forEach((b) => (b.onclick = async (e) => { e.preventDefault(); if (!confirm('형제·자매 연결을 끊을까요?')) return; await api('DELETE', `/api/students/${id}/siblings/${b.dataset.unsib}`); reload(); }));
     $$('[data-addpay]', el).forEach((b) => (b.onclick = () => {
       const kind = b.dataset.addpay;
-      modal({
-        title: `${kind} 수납 기록`,
-        body: `${kind === '교육비' ? `<label class="field"><span>몇 월 교육비인가요?</span><input type="month" name="month" value="${thisMonth()}" required></label>` : ''}
-          <div class="grid g2"><label class="field"><span>금액</span><input type="text" name="amount" inputmode="numeric" required value="${kind === '교육비' && d.monthly_fee ? d.monthly_fee : ''}"></label>
-          <label class="field"><span>납부일</span><input type="date" name="paid_date" value="${todayStr()}" required></label></div>
-          <label class="field"><span>결제 방법</span><select name="method">${['카드', '계좌이체', '현금', '지역화폐', '기타'].map((x) => `<option>${x}</option>`).join('')}</select></label>
-          <label class="field"><span>${kind === '교재비' ? '내용 (어떤 교재인지)' : '메모'}</span><input type="text" name="memo"></label>`,
-        onSubmit: async (f) => { await api('POST', `/api/students/${id}/payments`, { ...f, kind }); toast('기록했어요'); reload(); },
-      });
+      payModal({ sid: id, name: s.name, kind, amount: kind === '교육비' ? (ts && ts.due) || d.monthly_fee || '' : (bs && bs.due) || '', done: reload });
     }));
     $$('[data-delpay]', el).forEach((b) => (b.onclick = async () => { if (!confirm('이 수납 기록을 지울까요?')) return; await api('DELETE', `/api/payments/${b.dataset.delpay}`); reload(); }));
   }
@@ -1953,11 +2203,12 @@
         <label class="field"><span>📚 교재비 청구서 문구</span><textarea name="tpl_bill_book" style="min-height:130px">${h(s.tpl_bill_book)}</textarea></label>
         <label class="field"><span>🧾 함께 청구할 때 문구</span><textarea name="tpl_bill" style="min-height:130px">${h(s.tpl_bill)}</textarea></label>
         <h2 class="mt">영단어 시험</h2>
-        <div class="small">통과 기준은 시험 유형별로 고정이에요: <b>한글뜻 90%</b> · <b>스펠링 80%</b> · <b>혼합 90%</b>. 채점 화면에서 회독(1~4회독)과 유형을 골라요.<input type="hidden" name="word_pass_pct" value="${h(s.word_pass_pct || 90)}"></div>
-        <p class="small muted mt">단어 교재 (교재 이름 · 개수 · Day 또는 Unit. 채점 화면에서 Day 1~N 또는 Unit 1~N 중 하나를 골라요. 학원 자체 단어장은 Unit으로 정해 주세요. 반 관리에서 교재·단원을 넣은 반은 그 단원으로 골라요)</p>
-        <div id="wbooks">${s.word_books.map((b) => `<div class="row wb-row" style="margin-bottom:6px"><input type="text" class="wb-name" value="${h(b.name)}" style="flex:2"><input type="number" class="wb-days" value="${b.days}" style="width:80px"><select class="wb-unit" style="width:auto"><option ${b.unit === 'Unit' ? '' : 'selected'}>Day</option><option ${b.unit === 'Unit' ? 'selected' : ''}>Unit</option></select><span class="small muted">개</span><button type="button" class="btn sm danger" data-wbdel>✕</button></div>`).join('')}</div>
+        <div class="row"><label class="inline-check">통과 기준 <input type="number" name="word_pass_pct" value="${h(s.word_pass_pct || 90)}" min="1" max="100" style="width:80px"> % 이상 맞히면 통과</label></div>
+        <p class="small muted mt">단어 교재 (교재 이름과 Day 수 · 채점 화면에서 Day 1~N으로 범위를 고를 수 있어요. 반 관리에서 교재·단원을 넣은 반은 그 단원으로 골라요)</p>
+        <div id="wbooks">${s.word_books.map((b) => `<div class="row wb-row" style="margin-bottom:6px"><input type="text" class="wb-name" value="${h(b.name)}" style="flex:2"><input type="number" class="wb-days" value="${b.days}" style="width:90px"><span class="small muted">Day</span><button type="button" class="btn sm danger" data-wbdel>✕</button></div>`).join('')}</div>
         <button type="button" class="btn sm" id="wbAdd">＋ 단어 교재 추가</button>
         <label class="field mt"><span>단어시험 결과 문자 — 쓸 수 있는 칸: {학원} {학생} {차수} {교재} {범위} {점수} {결과} {링크}</span><textarea name="tpl_word" style="min-height:110px">${h(s.tpl_word)}</textarea></label>
+        <label class="field mt"><span>재시험 안내 문자 — 쓸 수 있는 칸: {학원} {학생} {일시} {교재} {범위} {메모}</span><textarea name="tpl_word_retest" style="min-height:100px">${h(s.tpl_word_retest || '')}</textarea></label>
         <h2 class="mt">수업 일지 알림</h2>
         <p class="small muted" style="margin-top:-6px">수업이 끝나고 정한 시간이 지나도 일지가 없으면 그 선생님 대시보드에 알림이 뜨고, 문자도 보낼 수 있어요. 문자는 30분마다 확인해서 한 수업에 한 번만 보내요. (선생님 연락처가 [선생님 계정]에 있어야 해요)</p>
         <div class="row" style="gap:14px">
@@ -1979,7 +2230,7 @@
       </form>`;
     const wireWb = (row) => ($('[data-wbdel]', row).onclick = () => row.remove());
     $$('.wb-row', el).forEach(wireWb);
-    $('#wbAdd').onclick = () => { const dv = document.createElement('div'); dv.className = 'row wb-row'; dv.style.marginBottom = '6px'; dv.innerHTML = '<input type="text" class="wb-name" placeholder="예: 워드마스터 중등 실력" style="flex:2"><input type="number" class="wb-days" value="40" style="width:80px"><select class="wb-unit" style="width:auto"><option selected>Day</option><option>Unit</option></select><span class="small muted">개</span><button type="button" class="btn sm danger" data-wbdel>✕</button>'; $('#wbooks').appendChild(dv); wireWb(dv); };
+    $('#wbAdd').onclick = () => { const dv = document.createElement('div'); dv.className = 'row wb-row'; dv.style.marginBottom = '6px'; dv.innerHTML = '<input type="text" class="wb-name" placeholder="예: 워드마스터 중등 실력" style="flex:2"><input type="number" class="wb-days" value="40" style="width:90px"><span class="small muted">Day</span><button type="button" class="btn sm danger" data-wbdel>✕</button>'; $('#wbooks').appendChild(dv); wireWb(dv); };
     const wireDisc = (row) => ($('[data-ddel]', row).onclick = () => row.remove());
     $$('.disc-row', el).forEach(wireDisc);
     $('#discAdd').onclick = () => {
@@ -1997,7 +2248,7 @@
         const teacher_view = Object.fromEntries(Object.keys(s.teacher_view_labels).map((k) => [k, !!d['tv_' + k]]));
         const discount_items = $$('.disc-row', e.target).map((r) => ({ id: $('[data-did]', r).value, name: $('[data-dname]', r).value, amount: $('[data-damt]', r).value })).filter((x) => x.name.trim());
         const book_suppliers = String(d.suppliers || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-        await api('PUT', '/api/settings', { academy_name: d.academy_name, mottos: [d.motto0, d.motto1, d.motto2], tpl_attendance: d.tpl_attendance, tpl_feedback: d.tpl_feedback, send_mode: d.send_mode, teacher_view, discount_items, book_suppliers, bank_account: d.bank_account, bank_account_book: d.bank_account_book, tpl_bill: d.tpl_bill, tpl_bill_tuition: d.tpl_bill_tuition, tpl_bill_book: d.tpl_bill_book, word_pass_pct: d.word_pass_pct, tpl_word: d.tpl_word, word_books: $$('.wb-row', e.target).map((r) => ({ name: $('.wb-name', r).value, days: $('.wb-days', r).value, unit: $('.wb-unit', r).value })), log_remind: { on: !!d.lr_on, after_min: d.lr_after, sms: !!d.lr_sms, start_date: d.lr_start }, tpl_log_remind: d.tpl_log_remind });
+        await api('PUT', '/api/settings', { academy_name: d.academy_name, mottos: [d.motto0, d.motto1, d.motto2], tpl_attendance: d.tpl_attendance, tpl_feedback: d.tpl_feedback, send_mode: d.send_mode, teacher_view, discount_items, book_suppliers, bank_account: d.bank_account, bank_account_book: d.bank_account_book, tpl_bill: d.tpl_bill, tpl_bill_tuition: d.tpl_bill_tuition, tpl_bill_book: d.tpl_bill_book, word_pass_pct: d.word_pass_pct, tpl_word: d.tpl_word, tpl_word_retest: d.tpl_word_retest, word_books: $$('.wb-row', e.target).map((r) => ({ name: $('.wb-name', r).value, days: $('.wb-days', r).value })), log_remind: { on: !!d.lr_on, after_min: d.lr_after, sms: !!d.lr_sms, start_date: d.lr_start }, tpl_log_remind: d.tpl_log_remind });
         state.academy = d.academy_name;
         toast('저장했어요');
         renderShell();
@@ -2049,7 +2300,7 @@
     const tabs = (key, list, label) => `<div class="tabs"><button class="btn sm ${!query[key] ? 'primary' : ''}" data-tab="${key}" data-v="">${label}</button>${list.map((x) => `<button class="btn sm ${query[key] === x ? 'primary' : ''}" data-tab="${key}" data-v="${h(x)}">${h(x)}</button>`).join('')}</div>`;
     el.innerHTML = `
       <div class="page-head"><div><h1>교재 관리</h1><p>교재를 등록하고 입고를 기록하면 재고가 자동으로 계산돼요. 학생에게 배부하면 재고에서 빠지고 학생 카드에 기록돼요.</p></div>
-        ${manage ? '<div class="row"><button class="btn" id="importBk">📂 엑셀로 한꺼번에 등록</button><button class="btn primary" id="addBk">＋ 교재 등록</button></div>' : ''}</div>
+        ${manage ? '<button class="btn primary" id="addBk">＋ 교재 등록</button>' : ''}</div>
       <div class="card">
         ${tabs('level', d.levels, '전체 학년')}
         <div style="margin-top:6px">${tabs('subject', ['국어', '영어', '수학', '과학', '사회', '기타'], '전체 과목')}</div>
@@ -2075,84 +2326,8 @@
     $$('[data-tab]', el).forEach((b) => (b.onclick = () => go({ [b.dataset.tab]: b.dataset.v })));
     $('#bf').onsubmit = (e) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); go({ supplier: f.supplier, q: f.q, low: f.low ? '1' : '', all: f.all ? '1' : '' }); };
     if ($('#addBk')) $('#addBk').onclick = () => bookModal(d);
-    if ($('#importBk')) $('#importBk').onclick = () => bookImportModal();
     $$('[data-in]', el).forEach((b) => (b.onclick = () => stockModal(books.find((x) => x.id === Number(b.dataset.in)), d.suppliers)));
     $$('[data-give]', el).forEach((b) => (b.onclick = () => deliverModal(books.find((x) => x.id === Number(b.dataset.give)))));
-  }
-
-  // 엑셀 파일(아이키즈에서 옮긴 목록 등)로 교재 여러 개 한꺼번에 등록
-  function bookImportModal() {
-    let list = null;
-    const pick = (head, re) => head.findIndex((x) => re.test(x));
-    const parse = (grid) => {
-      const hi = grid.findIndex((r) => r.some((c) => /교재명|교재이름|물품명/.test(String(c).replace(/\s/g, ''))));
-      if (hi < 0) throw new Error('제목 줄에 "교재명" 칸이 있어야 해요');
-      const head = grid[hi].map((c) => String(c).replace(/\s/g, ''));
-      const col = {
-        name: pick(head, /교재명|교재이름|물품명/), level: pick(head, /학교급|학년/), subject: pick(head, /과목/), cat: pick(head, /카테고리|분류/),
-        supplier: pick(head, /거래처/), list_price: pick(head, /정가|구매가/), sale_price: pick(head, /판매가|할인가/),
-        stock: pick(head, /재고|수량/), date: pick(head, /등록일|입고일/), memo: pick(head, /메모|비고/),
-      };
-      const get = (r, k) => (col[k] >= 0 ? String(r[col[k]] ?? '').trim() : '');
-      return grid.slice(hi + 1).map((r) => {
-        const cat = get(r, 'cat');
-        let level = get(r, 'level'), subject = get(r, 'subject');
-        if (!level) level = (cat.match(/^(유아|초등|중등|고등)/) || [])[1] || '';
-        if (!subject) subject = (cat.match(/(국어|영어|수학|과학|사회)/) || [])[1] || (/몬스터|연산|매스/.test(cat) ? '수학' : '');
-        let date = get(r, 'date');
-        if (/^\d+(\.\d+)?$/.test(date)) date = excelDate(date).slice(0, 10);
-        date = date.replace(/[.\/]\s*/g, '-').replace(/-$/, '');
-        return { name: get(r, 'name'), level, subject, supplier: get(r, 'supplier'), list_price: get(r, 'list_price'), sale_price: get(r, 'sale_price'), stock: get(r, 'stock'), date, memo: get(r, 'memo') };
-      }).filter((x) => x.name);
-    };
-    modal({
-      title: '엑셀로 교재 한꺼번에 등록', wide: true, submitText: '파일을 먼저 골라 주세요',
-      body: `
-        <div class="howto">
-          엑셀 파일을 고르면 미리 보기가 나와요. 확인하고 <b>등록하기</b>를 누르면 끝이에요.
-          <div class="small muted" style="margin-top:6px">알아듣는 제목: <b>교재명</b> · 학교급 · 과목 · 카테고리 · 거래처 · 구매가(정가) · 판매가 · 재고 · 등록일 · 메모<br>
-          이미 같은 이름으로 등록된 교재는 건너뛰어요. 재고가 있으면 첫 입고로 기록돼요.</div>
-          <div class="row" style="margin-top:8px"><label class="btn sm primary" style="cursor:pointer">📂 엑셀 파일 고르기<input type="file" id="bkFile" accept=".xlsx,.csv" hidden></label><span class="small muted" id="bkFileName"></span></div>
-        </div>
-        <div id="bkPreview"></div>`,
-      onOpen: (f) => {
-        $('#bkFile', f).onchange = async (e) => {
-          const file = e.target.files[0];
-          if (!file) return;
-          $('.err', f).textContent = '';
-          try {
-            const grid = /\.csv$/i.test(file.name) ? (await file.text()).replace(/^﻿/, '').split(/\r?\n/).map((l) => l.split(',')) : await readXlsx(file);
-            list = parse(grid);
-            if (!list.length) throw new Error('읽을 교재가 없어요');
-            $('#bkFileName', f).textContent = file.name;
-            const count = (k) => Object.entries(list.reduce((a, x) => ((a[x[k] || '(없음)'] = (a[x[k] || '(없음)'] || 0) + 1), a), {})).map(([k2, v]) => `${h(k2)} ${v}`).join(' · ');
-            $('#bkPreview', f).innerHTML = `
-              <div class="mt"><b>미리 보기</b> — 모두 <b>${list.length}개</b> (앞의 10개만 보여요)</div>
-              <div class="small muted">학교급: ${count('level')}<br>과목: ${count('subject')}<br>거래처: ${count('supplier')}</div>
-              <div class="table-wrap" style="margin-top:6px"><table class="list"><thead><tr><th>교재명</th><th>학교급</th><th>과목</th><th>거래처</th><th>정가</th><th>판매가</th><th>재고</th></tr></thead>
-              <tbody>${list.slice(0, 10).map((x) => `<tr><td class="small">${h(x.name)}</td><td class="small">${h(x.level)}</td><td class="small">${h(x.subject)}</td><td class="small">${h(x.supplier)}</td><td class="small">${h(x.list_price)}</td><td class="small">${h(x.sale_price)}</td><td class="small">${h(x.stock)}</td></tr>`).join('')}</tbody></table></div>
-              <div id="bkProgress" class="small" style="margin-top:6px"></div>`;
-            $('button[type=submit]', f).textContent = `이대로 ${list.length}개 등록하기`;
-          } catch (err) { list = null; $('.err', f).textContent = err.message; }
-          e.target.value = '';
-        };
-      },
-      onSubmit: async (d, f) => {
-        if (!list) throw new Error('엑셀 파일을 먼저 골라 주세요');
-        const btn = $('button[type=submit]', f);
-        btn.disabled = true;
-        let added = 0, skipped = 0, stocked = 0;
-        try {
-          for (let i = 0; i < list.length; i += 15) {
-            $('#bkProgress', f).textContent = `등록하는 중… ${i} / ${list.length}`;
-            const r = await api('POST', '/api/catalog/import', { rows: list.slice(i, i + 15) });
-            added += r.added; skipped += r.skipped; stocked += r.stocked;
-          }
-        } finally { btn.disabled = false; }
-        toast(`${added}개 등록했어요${skipped ? ` (이미 있어서 건너뜀 ${skipped}개)` : ''}`);
-        reload();
-      },
-    });
   }
 
   function bookModal(meta, b = null) {

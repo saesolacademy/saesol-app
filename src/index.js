@@ -449,7 +449,11 @@ route('GET', '/api/students/:id', async ({ db, user, params }) => {
   if (view.siblings && raw.family_id) jobs.siblings = q.all(db, `SELECT id, name, school, grade, status, photo_v FROM students WHERE family_id = ? AND id != ? ORDER BY birth_date, name`, raw.family_id, id);
   if (view.books || view.bookpay) jobs.books = q.all(db, `SELECT b.*, u.name AS given_by_name, bk.image_v AS book_image_v FROM book_deliveries b LEFT JOIN users u ON u.id = b.given_by LEFT JOIN books bk ON bk.id = b.book_id WHERE b.student_id = ? ORDER BY b.date DESC, b.id DESC`, id);
   jobs.subjects = q.all(db, 'SELECT subject, start_date, end_date FROM student_subjects WHERE student_id = ?', id);
-  jobs.words = q.all(db, `SELECT w.id, w.date, w.book, w.range, w.round, w.kind, w.total, w.score, w.pass_score, w.passed, w.attempt, w.photo_v, w.memo, w.teacher_id, u.name AS teacher_name, c.name AS course_name FROM word_tests w LEFT JOIN users u ON u.id = w.teacher_id LEFT JOIN courses c ON c.id = w.course_id WHERE w.student_id = ? ORDER BY w.date DESC, w.id DESC LIMIT 200`, id);
+  // 성취도 누적: 지금 반에서 빠졌어도 그동안 쓴 기록은 모두 보여요
+  jobs.achieves = q.all(db, `SELECT l.date, l.course_id, c.name AS course_name, c.subject, l.teacher_id, u.name AS teacher_name, u.photo_v AS teacher_photo_v, n.achieve, n.hw, n.note
+    FROM class_log_notes n JOIN class_logs l ON l.id = n.log_id JOIN courses c ON c.id = l.course_id LEFT JOIN users u ON u.id = l.teacher_id
+    WHERE n.student_id = ? AND (IFNULL(n.achieve, '') != '' OR IFNULL(n.hw, '') != '') ORDER BY l.date DESC, l.id DESC LIMIT 1000`, id);
+  jobs.words = q.all(db, `SELECT w.id, w.date, w.book, w.range, w.total, w.score, w.pass_score, w.passed, w.attempt, w.photo_v, w.memo, w.teacher_id, u.name AS teacher_name, c.name AS course_name FROM word_tests w LEFT JOIN users u ON u.id = w.teacher_id LEFT JOIN courses c ON c.id = w.course_id WHERE w.student_id = ? ORDER BY w.date DESC, w.id DESC LIMIT 200`, id);
   if (view.fees) jobs.my_discounts = q.all(db, 'SELECT item_id FROM student_discounts WHERE student_id = ?', id);
   if (user.role === 'owner') jobs.bills = q.all(db, `SELECT bl.*, u.name AS sent_by_name FROM bills bl LEFT JOIN users u ON u.id = bl.sent_by WHERE bl.student_id = ? ORDER BY bl.id DESC LIMIT 24`, id);
   if (view.tuition) jobs.tuition = q.all(db, `SELECT p.*, u.name AS created_by_name FROM payments p LEFT JOIN users u ON u.id = p.created_by WHERE p.student_id = ? AND p.kind = '교육비' ORDER BY p.paid_date DESC, p.id DESC`, id);
@@ -817,12 +821,138 @@ route('POST', '/api/students/:id/payments', async ({ db, user, body, params }) =
   if (kind === '교육비' && !month) fail(400, '몇 월 교육비인지 골라 주세요');
   const amount = money(body.amount);
   if (!amount) fail(400, '금액을 입력해 주세요');
-  const method = ['카드', '계좌이체', '현금', '지역화폐', '기타'].includes(body.method) ? body.method : '기타';
+  const PAY_METHODS = ['계좌', '영주사랑 모바일', '영주사랑 상품권', '신용카드', '현금', '카드', '계좌이체', '지역화폐', '기타'];
+  const picked = (Array.isArray(body.methods) ? body.methods : [body.method]).map((x) => String(x || '').trim()).filter((x) => PAY_METHODS.includes(x));
+  const method = [...new Set(picked)].join(', ') || '기타';
   const r = await q.run(db, 'INSERT INTO payments (student_id, kind, month, amount, paid_date, method, memo, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, kind, month, amount, isDate(body.paid_date) ? body.paid_date : today(), method, clean(body.memo), user.id);
   return { ok: true, id: r.meta.last_row_id };
 }, OWNER);
 route('DELETE', '/api/payments/:id', async ({ db, params }) => {
   await q.run(db, 'DELETE FROM payments WHERE id = ?', Number(params.id));
+  return { ok: true };
+}, OWNER);
+
+
+// ───────── 오늘 할 일 ─────────
+// 학원 업무(원장이 정함): 담당자 한 명 또는 모든 선생님. 보고가 필요한 업무는 완료할 때 보고를 남기고, 원장이 확인해요.
+// 내 할 일: 나만 보여요.
+const TASK_REPEATS = ['once', 'daily', 'weekly'];
+function taskOn(t, date) {
+  if (t.repeat === 'daily') return (t.date || '') <= date;
+  if (t.repeat === 'weekly') return (t.date || '') <= date && String(t.days || '').split(',').includes(weekdayOf(date));
+  return t.date === date;
+}
+function cleanTask(body, isAcademy) {
+  const title = clean(body.title);
+  if (!title) fail(400, '할 일을 적어 주세요');
+  const repeat = TASK_REPEATS.includes(body.repeat) ? body.repeat : 'once';
+  const days = repeat === 'weekly' ? String(body.days || '').split(',').map((x) => x.trim()).filter((x) => WEEK.includes(x)).join(',') : null;
+  if (repeat === 'weekly' && !days) fail(400, '요일을 하나 이상 골라 주세요');
+  return {
+    title: title.slice(0, 200), memo: clean(body.memo), repeat, days,
+    date: isDate(body.date) ? body.date : today(),
+    needs_report: isAcademy && body.needs_report ? 1 : 0,
+    assignee_id: isAcademy && Number(body.assignee_id) ? Number(body.assignee_id) : null,
+  };
+}
+async function staffList(db) {
+  return q.all(db, `SELECT id, name, role, staff_role, photo_v FROM users WHERE active = 1 AND role IN ('owner', 'teacher') ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, name`);
+}
+route('GET', '/api/tasks/today', async ({ db, user, query }) => {
+  const date = isDate(query.date) ? query.date : today();
+  const all = await q.all(db, `SELECT t.*, u.name AS assignee_name FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id
+    WHERE t.active = 1 AND ((t.scope = 'personal' AND t.created_by = ?) OR (t.scope = 'academy' AND (t.assignee_id IS NULL OR t.assignee_id = ?)))
+    ORDER BY t.scope, t.id`, user.id, user.id);
+  const done = await q.all(db, 'SELECT * FROM task_done WHERE user_id = ? AND (date = ? OR task_id IN (SELECT id FROM tasks WHERE repeat = \'once\' AND active = 1))', user.id, date);
+  const doneMap = new Map(done.map((x) => [`${x.task_id}|${x.date}`, x]));
+  const onceDone = new Set(done.map((x) => x.task_id));
+  const mine = [];
+  for (const t of all) {
+    if (t.scope === 'academy' && t.assignee_id == null && user.role === 'owner' && t.created_by === user.id) continue; // 원장이 모두에게 준 업무는 현황으로 봐요
+    let late = false;
+    if (t.repeat === 'once') {
+      if (t.date > date) continue;
+      if (t.date < date) { if (onceDone.has(t.id)) continue; late = true; } // 못 한 일은 다음 날로 넘어와요
+    } else if (!taskOn(t, date)) continue;
+    const dkey = t.repeat === 'once' ? t.date : date;
+    const d = doneMap.get(`${t.id}|${dkey}`) || null;
+    mine.push({ ...t, late, done: d ? { id: d.id, done_at: d.done_at, report: d.report, report_status: d.report_status, checked_at: d.checked_at } : null, done_date: dkey });
+  }
+  const out = { date, weekday: weekdayOf(date), mine };
+  if (user.role === 'owner') {
+    const staff = await staffList(db);
+    const academy = await q.all(db, `SELECT * FROM tasks WHERE scope = 'academy' AND active = 1 ORDER BY id`);
+    const rows = await q.all(db, `SELECT d.*, t.title, t.needs_report, u.name AS user_name, u.photo_v AS user_photo_v FROM task_done d JOIN tasks t ON t.id = d.task_id JOIN users u ON u.id = d.user_id WHERE t.scope = 'academy' AND (d.date = ? OR d.report_status = 'sent')`, date);
+    const byKey = new Map(rows.map((r) => [`${r.task_id}|${r.user_id}|${r.date}`, r]));
+    out.board = academy.filter((t) => (t.repeat === 'once' ? t.date <= date : taskOn(t, date))).map((t) => {
+      const people = (t.assignee_id ? staff.filter((u) => u.id === t.assignee_id) : staff.filter((u) => u.role !== 'owner'));
+      const dkey = t.repeat === 'once' ? t.date : date;
+      const list = people.map((u) => { const r = byKey.get(`${t.id}|${u.id}|${dkey}`); return { user_id: u.id, name: u.name, photo_v: u.photo_v, done: !!r, report_status: r ? r.report_status : null }; });
+      return { ...t, people: list, done_count: list.filter((x) => x.done).length };
+    }).filter((t) => t.repeat !== 'once' || t.date === date || t.done_count < t.people.length);
+    out.reports = rows.filter((r) => r.report_status === 'sent').sort((a, b) => b.done_at.localeCompare(a.done_at));
+    out.staff = staff;
+  }
+  return out;
+});
+route('GET', '/api/tasks', async ({ db, user }) => {
+  const personal = await q.all(db, `SELECT * FROM tasks WHERE scope = 'personal' AND created_by = ? AND active = 1 ORDER BY id DESC`, user.id);
+  const out = { personal };
+  if (user.role === 'owner') {
+    out.academy = await q.all(db, `SELECT t.*, u.name AS assignee_name FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id WHERE t.scope = 'academy' AND t.active = 1 ORDER BY t.id DESC`);
+    out.staff = await staffList(db);
+  }
+  return out;
+});
+route('POST', '/api/tasks', async ({ db, user, body }) => {
+  const academy = body.scope === 'academy';
+  if (academy && user.role !== 'owner') fail(403, '학원 업무는 원장님만 정할 수 있어요');
+  const t = cleanTask(body, academy);
+  const r = await q.run(db, 'INSERT INTO tasks (scope, title, memo, assignee_id, repeat, days, date, needs_report, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    academy ? 'academy' : 'personal', t.title, t.memo, t.assignee_id, t.repeat, t.days, t.date, t.needs_report, user.id);
+  return { ok: true, id: r.meta.last_row_id };
+});
+async function myTask(db, user, id) {
+  const t = await q.first(db, 'SELECT * FROM tasks WHERE id = ?', Number(id));
+  if (!t) fail(404, '할 일을 찾을 수 없어요');
+  if (t.scope === 'academy' ? user.role !== 'owner' : t.created_by !== user.id) fail(403, '고칠 수 없는 할 일이에요');
+  return t;
+}
+route('PATCH', '/api/tasks/:id', async ({ db, user, body, params }) => {
+  const t0 = await myTask(db, user, params.id);
+  const t = cleanTask({ ...t0, ...body }, t0.scope === 'academy');
+  await q.run(db, 'UPDATE tasks SET title = ?, memo = ?, assignee_id = ?, repeat = ?, days = ?, date = ?, needs_report = ? WHERE id = ?', t.title, t.memo, t.assignee_id, t.repeat, t.days, t.date, t.needs_report, t0.id);
+  return { ok: true };
+});
+route('DELETE', '/api/tasks/:id', async ({ db, user, params }) => {
+  const t = await myTask(db, user, params.id);
+  await q.run(db, 'UPDATE tasks SET active = 0 WHERE id = ?', t.id);
+  return { ok: true };
+});
+// 완료 표시 (보고가 필요한 업무면 report 를 함께 보내요)
+route('POST', '/api/tasks/:id/done', async ({ db, user, body, params }) => {
+  const t = await q.first(db, 'SELECT * FROM tasks WHERE id = ? AND active = 1', Number(params.id));
+  if (!t) fail(404, '할 일을 찾을 수 없어요');
+  const mineOk = t.scope === 'personal' ? t.created_by === user.id : (t.assignee_id == null || t.assignee_id === user.id);
+  if (!mineOk) fail(403, '내 할 일이 아니에요');
+  const date = t.repeat === 'once' ? t.date : (isDate(body.date) ? body.date : today());
+  const report = clean(body.report);
+  const status = t.scope === 'academy' && t.needs_report ? 'sent' : null;
+  if (status && !report) fail(400, '원장님께 보고할 내용을 적어 주세요');
+  await q.run(db, `INSERT INTO task_done (task_id, user_id, date, report, report_status) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (task_id, user_id, date) DO UPDATE SET report = excluded.report, report_status = excluded.report_status, done_at = datetime('now'), checked_at = NULL`, t.id, user.id, date, report, status);
+  return { ok: true, reported: !!status };
+});
+route('DELETE', '/api/tasks/:id/done', async ({ db, user, params, query }) => {
+  const t = await q.first(db, 'SELECT * FROM tasks WHERE id = ?', Number(params.id));
+  if (!t) fail(404, '할 일을 찾을 수 없어요');
+  const date = t.repeat === 'once' ? t.date : (isDate(query.date) ? query.date : today());
+  await q.run(db, 'DELETE FROM task_done WHERE task_id = ? AND user_id = ? AND date = ?', t.id, user.id, date);
+  return { ok: true };
+});
+// 원장: 보고 확인
+route('POST', '/api/task-done/:id/check', async ({ db, params }) => {
+  await q.run(db, `UPDATE task_done SET report_status = 'checked', checked_at = datetime('now') WHERE id = ?`, Number(params.id));
   return { ok: true };
 }, OWNER);
 
@@ -1248,38 +1378,6 @@ route('POST', '/api/catalog', async ({ db, user, body }) => {
   if (qty) await q.run(db, 'INSERT INTO book_stock (book_id, date, qty, supplier, created_by) VALUES (?, ?, ?, ?, ?)', id, isDate(body.first_date) ? body.first_date : today(), qty, v.supplier, user.id);
   return { ok: true, id };
 }, OM);
-// 엑셀로 교재 여러 개 한꺼번에 등록 (화면에서 15개씩 나눠 보내요)
-// 같은 이름의 교재가 이미 있으면 건너뛰고, 재고가 있으면 첫 입고로 기록해요.
-route('POST', '/api/catalog/import', async ({ db, user, body }) => {
-  const rows = Array.isArray(body.rows) ? body.rows.slice(0, 20) : [];
-  const exist = new Set((await q.all(db, 'SELECT name FROM books')).map((r) => normName(r.name)));
-  const stmts = [];
-  const newSup = new Set();
-  let added = 0, skipped = 0, stocked = 0;
-  for (const r of rows) {
-    const name = clean(r.name);
-    if (!name || exist.has(normName(name))) { skipped++; continue; }
-    exist.add(normName(name));
-    const num = (v) => { const n = Number(String(v ?? '').replace(/[^0-9]/g, '')); return String(v ?? '').trim() === '' || !Number.isFinite(n) || n > 100000000 ? null : n; };
-    const supplier = clean(r.supplier);
-    if (supplier) newSup.add(supplier);
-    stmts.push(db.prepare('INSERT INTO books (level, subject, supplier, name, list_price, sale_price, memo, active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)')
-      .bind(BOOK_LEVELS.includes(r.level) ? r.level : null, SUBJECTS.includes(r.subject) ? r.subject : null, supplier, name.slice(0, 200), num(r.list_price), num(r.sale_price), clean(r.memo)));
-    const qty = Math.trunc(Number(r.stock) || 0);
-    if (qty > 0 && qty < 100000) {
-      stmts.push(db.prepare('INSERT INTO book_stock (book_id, date, qty, supplier, memo, created_by) VALUES (last_insert_rowid(), ?, ?, ?, ?, ?)')
-        .bind(isDate(r.date) ? r.date : today(), qty, supplier, '아이키즈에서 옮긴 재고', user.id));
-      stocked++;
-    }
-    added++;
-  }
-  // 처음 보는 거래처는 거래처 목록에도 넣어요
-  const sups = suppliersOf(await getSettings(db));
-  const more = [...newSup].filter((x) => !sups.includes(x));
-  if (more.length) stmts.push(db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('book_suppliers', ?)`).bind(JSON.stringify([...sups, ...more])));
-  if (stmts.length) await db.batch(stmts);
-  return { ok: true, added, skipped, stocked };
-}, OM);
 route('PATCH', '/api/catalog/:id', async ({ db, body, params }) => {
   const cur = await q.first(db, 'SELECT * FROM books WHERE id = ?', Number(params.id));
   if (!cur) fail(404, '교재를 찾을 수 없어요');
@@ -1432,7 +1530,7 @@ route('GET', '/api/classlog', async ({ db, user, query }) => {
   // 지난 수업 숙제 검사 누적 (최근 30일 × 횟수)
   const hwMiss = await q.all(db, `SELECT n.student_id, SUM(CASE WHEN n.hw = '×' THEN 1 ELSE 0 END) AS miss, SUM(CASE WHEN n.hw = '△' THEN 1 ELSE 0 END) AS part
     FROM class_log_notes n JOIN class_logs l ON l.id = n.log_id WHERE l.course_id = ? AND l.date >= ? AND l.date < ? GROUP BY n.student_id`, course.id, addDays(date, -30), date);
-  const words = await q.all(db, 'SELECT id, student_id, score, total, passed, attempt, range, round, kind, photo_v FROM word_tests WHERE course_id = ? AND date = ? ORDER BY attempt, id', course.id, date);
+  const words = await q.all(db, 'SELECT id, student_id, score, total, passed, attempt, range, photo_v FROM word_tests WHERE course_id = ? AND date = ? ORDER BY attempt, id', course.id, date);
   return { log, notes, recent, units, hw_miss: hwMiss, fields: parseFields(course.log_fields), words };
 });
 
@@ -1476,12 +1574,8 @@ route('PUT', '/api/classlog', async ({ db, user, body }) => {
 // ───────── 영단어 시험 채점 ─────────
 const WORD_PHOTO_MAX = 900 * 1024;
 function wordBooks(s) { try { const a = JSON.parse(s.word_books); return Array.isArray(a) ? a.filter((b) => b && b.name) : []; } catch { return []; } }
-// 시험 유형별 통과 기준(고정): 한글뜻 90%, 스펠링 80%, 혼합 90%
-const WORD_KINDS = { 한글뜻: 90, 스펠링: 80, 혼합: 90 };
-const WORD_ROUNDS = 4;
-const wordLabel = (t) => [t.round ? `${t.round}회독` : '', t.kind || ''].filter(Boolean).join(' · ');
 const attemptLabel = (n) => (n <= 1 ? '본시험' : `재시험${n > 2 ? ' ' + (n - 1) + '차' : ''}`);
-const wordPublic = (t) => ({ id: t.id, student_id: t.student_id, course_id: t.course_id, teacher_id: t.teacher_id, date: t.date, book: t.book, range: t.range, total: t.total, score: t.score, pass_score: t.pass_score, passed: !!t.passed, attempt: t.attempt, round: t.round, kind: t.kind, parent_id: t.parent_id, memo: t.memo, photo_v: t.photo_v, sent_at: t.sent_at, teacher_name: t.teacher_name, student_name: t.student_name });
+const wordPublic = (t) => ({ id: t.id, student_id: t.student_id, course_id: t.course_id, teacher_id: t.teacher_id, date: t.date, book: t.book, range: t.range, total: t.total, score: t.score, pass_score: t.pass_score, passed: !!t.passed, attempt: t.attempt, parent_id: t.parent_id, memo: t.memo, photo_v: t.photo_v, sent_at: t.sent_at, teacher_name: t.teacher_name, student_name: t.student_name, retest_at: t.retest_at || null, retest_memo: t.retest_memo || null });
 
 // 채점 화면: 반 학생 + 그날 시험 결과
 route('GET', '/api/word/class', async ({ db, user, query }) => {
@@ -1495,12 +1589,12 @@ route('GET', '/api/word/class', async ({ db, user, query }) => {
       ORDER BY w.date DESC`, course.id, date, addDays(date, -30));
   const settings = await getSettings(db);
   const units = await q.all(db, 'SELECT book, title FROM course_units WHERE course_id = ? ORDER BY seq, id', course.id);
-  const last = await q.first(db, 'SELECT book, range, total, round, kind FROM word_tests WHERE course_id = ? ORDER BY id DESC LIMIT 1', course.id);
+  const last = await q.first(db, 'SELECT book, range, total FROM word_tests WHERE course_id = ? ORDER BY id DESC LIMIT 1', course.id);
   return {
     course, date, units, last,
     students: students.map((s) => ({ id: s.id, name: s.name, school: s.school, grade: s.grade, photo_v: s.photo_v, has_phone: !!s.student_phone })),
     tests: tests.map(wordPublic), pending: pending.map(wordPublic),
-    pass_pct: Number(settings.word_pass_pct) || 90, word_kinds: WORD_KINDS, word_rounds: WORD_ROUNDS, word_books: wordBooks(settings), teacher_has_phone: !!(await q.first(db, 'SELECT phone FROM users WHERE id = ?', course.teacher_id || user.id) || {}).phone,
+    pass_pct: Number(settings.word_pass_pct) || 90, word_books: wordBooks(settings), teacher_has_phone: !!(await q.first(db, 'SELECT phone FROM users WHERE id = ?', course.teacher_id || user.id) || {}).phone,
   };
 });
 
@@ -1513,21 +1607,14 @@ route('POST', '/api/word/tests', async ({ db, env, user, body, url }) => {
   if (total < 1 || total > 500) fail(400, '문항 수를 입력해 주세요');
   if (!(score >= 0 && score <= total)) fail(400, '맞은 개수가 문항 수보다 많아요');
   const settings = await getSettings(db);
-  let kind = WORD_KINDS[body.kind] ? body.kind : null;
-  let round = Math.trunc(Number(body.round)) || null;
-  if (round && (round < 1 || round > WORD_ROUNDS)) round = null;
+  const pass = body.pass_score != null && body.pass_score !== '' ? Math.trunc(Number(body.pass_score)) : Math.ceil((total * (Number(settings.word_pass_pct) || 90)) / 100);
   let attempt = 1, parentId = null;
   if (body.retest_of) {
     const prev = await q.first(db, 'SELECT * FROM word_tests WHERE id = ?', Number(body.retest_of));
     if (!prev || prev.student_id !== sid) fail(400, '재시험할 시험을 찾을 수 없어요');
     parentId = prev.parent_id || prev.id;
     attempt = (await q.first(db, 'SELECT MAX(attempt) AS m FROM word_tests WHERE id = ? OR parent_id = ?', parentId, parentId)).m + 1;
-    // 재시험은 본시험과 같은 회독·유형으로
-    kind = kind || prev.kind; round = round || prev.round;
   }
-  // 유형이 정해지면 통과 기준은 고정 (한글뜻 90%, 스펠링 80%, 혼합 90%)
-  const pass = kind ? Math.ceil((total * WORD_KINDS[kind]) / 100)
-    : body.pass_score != null && body.pass_score !== '' ? Math.trunc(Number(body.pass_score)) : Math.ceil((total * (Number(settings.word_pass_pct) || 90)) / 100);
   let photo = null;
   if (body.photo) {
     photo = String(body.photo);
@@ -1536,15 +1623,15 @@ route('POST', '/api/word/tests', async ({ db, env, user, body, url }) => {
   }
   const token = newToken().slice(0, 24);
   const date = isDate(body.date) ? body.date : today();
-  const r = await q.run(db, `INSERT INTO word_tests (student_id, course_id, teacher_id, date, book, range, total, score, pass_score, passed, attempt, parent_id, memo, photo, photo_v, token, round, kind)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    sid, course ? course.id : null, user.id, date, clean(body.book), clean(body.range), total, score, pass, score >= pass ? 1 : 0, attempt, parentId, clean(body.memo), photo, photo ? Date.now() : null, token, round, kind);
+  const r = await q.run(db, `INSERT INTO word_tests (student_id, course_id, teacher_id, date, book, range, total, score, pass_score, passed, attempt, parent_id, memo, photo, photo_v, token)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    sid, course ? course.id : null, user.id, date, clean(body.book), clean(body.range), total, score, pass, score >= pass ? 1 : 0, attempt, parentId, clean(body.memo), photo, photo ? Date.now() : null, token);
   const id = r.meta.last_row_id;
   // 보내기: 학생 + 담당 선생님 (사진이 있거나 보내기를 골랐을 때)
   let sent = [];
   if (body.send !== false) {
     const link = `${url.origin}/w/${token}`;
-    const text = fillTemplate(settings.tpl_word, { 학원: settings.academy_name, 학생: s.name, 차수: attemptLabel(attempt), 교재: clean(body.book) || '', 범위: [clean(body.range), wordLabel({ round, kind })].filter(Boolean).join(' · '), 점수: `${score}/${total}`, 결과: score >= pass ? '통과' : `불통 · 통과 기준 ${pass}개`, 링크: link });
+    const text = fillTemplate(settings.tpl_word, { 학원: settings.academy_name, 학생: s.name, 차수: attemptLabel(attempt), 교재: clean(body.book) || '', 범위: clean(body.range) || '', 점수: `${score}/${total}`, 결과: score >= pass ? '통과' : `불통 · 통과 기준 ${pass}개`, 링크: link });
     const tchId = course && course.teacher_id ? course.teacher_id : user.id;
     const tch = await q.first(db, 'SELECT name, phone FROM users WHERE id = ?', tchId);
     const msgs = [];
@@ -1567,7 +1654,7 @@ route('PATCH', '/api/word/tests/:id', async ({ db, user, body, params }) => {
   const total = 'total' in body ? Math.trunc(Number(body.total) || 0) : t.total;
   const score = 'score' in body ? Math.trunc(Number(body.score)) : t.score;
   if (total < 1 || !(score >= 0 && score <= total)) fail(400, '점수를 확인해 주세요');
-  const pass = t.kind && WORD_KINDS[t.kind] ? Math.ceil((total * WORD_KINDS[t.kind]) / 100) : 'pass_score' in body ? Math.trunc(Number(body.pass_score)) : t.pass_score;
+  const pass = 'pass_score' in body ? Math.trunc(Number(body.pass_score)) : t.pass_score;
   let photo = t.photo, pv = t.photo_v;
   if (body.photo) {
     if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(String(body.photo)) || String(body.photo).length > WORD_PHOTO_MAX) fail(400, '사진을 확인해 주세요');
@@ -1590,6 +1677,72 @@ route('GET', '/api/word/photos/:id', async ({ db, user, params }) => {
   if (!(await canSeeStudent(db, user, t.student_id))) fail(403, '볼 수 없는 사진이에요');
   return photoResponse(t.photo);
 });
+
+// ── 재시험 예약: 불통한 시험(가장 최근 차수)에 날짜·시간을 정해요. 재시험 결과를 기록하면 예약은 자동으로 끝나요.
+const RETEST_SLOTS = ['16:30', '17:30', '19:30'];
+// fixed: 다음 날 + 네 칸 / pickday: 금요일 시험 → 날짜 고르고 네 칸 / free: 2차 재시험부터 날짜·시간 자유
+const retestMode = (t) => (t.attempt >= 2 ? 'free' : weekdayOf(t.date) === '금' ? 'pickday' : 'fixed');
+const retestText = (at) => { const [d, t] = String(at).split(' '); const [hh, mm] = (t || '').split(':').map(Number); return `${prettyDate(d)}${t ? ` ${hh < 12 ? '오전' : '오후'} ${hh % 12 || 12}시${mm ? ` ${mm}분` : ''}` : ' (기타)'}`; };
+async function openFailedTest(db, user, id) {
+  const t = await q.first(db, 'SELECT * FROM word_tests WHERE id = ?', Number(id));
+  if (!t) fail(404, '시험을 찾을 수 없어요');
+  await mustSeeStudent(db, user, t.student_id);
+  if (t.passed) fail(400, '통과한 시험이에요');
+  const later = await q.first(db, 'SELECT id FROM word_tests WHERE parent_id = ? AND attempt > ?', t.parent_id || t.id, t.attempt);
+  if (later) fail(400, '이미 다음 재시험 결과가 있어요');
+  return t;
+}
+route('PUT', '/api/word/tests/:id/retest', async ({ db, env, user, body, params }) => {
+  if (!(user.role === 'teacher' && !isManager(user))) fail(403, '재시험 일정은 선생님만 정할 수 있어요');
+  const t = await openFailedTest(db, user, params.id);
+  // 1차 재시험: 시험 본 다음 날 4시 30분 / 5시 30분 / 7시 30분 / 기타(메모)
+  //   금요일 시험이면 다음 날이 토요일이라 날짜를 골라요.
+  // 2차 재시험부터: 날짜와 시간을 자유롭게 정해요.
+  const mode = retestMode(t);
+  const memo = clean(body.memo);
+  let at, saveMemo;
+  if (mode === 'free') {
+    if (!isDate(body.date) || body.date < t.date) fail(400, '재시험 날짜를 골라 주세요');
+    if (!/^\d{2}:\d{2}$/.test(body.time || '')) fail(400, '재시험 시간을 골라 주세요');
+    at = `${body.date} ${body.time}`; saveMemo = memo;
+  } else {
+    const day = mode === 'pickday' ? body.date : addDays(t.date, 1);
+    if (!isDate(day) || day <= t.date) fail(400, '재시험 날짜를 골라 주세요');
+    const slot = String(body.slot || '');
+    if (!RETEST_SLOTS.includes(slot) && slot !== 'etc') fail(400, '재시험 시간을 골라 주세요');
+    if (slot === 'etc' && !memo) fail(400, '기타를 골랐으면 메모를 적어 주세요');
+    at = slot === 'etc' ? day : `${day} ${slot}`; saveMemo = slot === 'etc' ? memo : null;
+  }
+  await q.run(db, 'UPDATE word_tests SET retest_at = ?, retest_memo = ?, retest_by = ? WHERE id = ?', at, saveMemo, user.id, t.id);
+  let sent = null;
+  if (body.notify) {
+    const s = await q.first(db, 'SELECT name, student_phone FROM students WHERE id = ?', t.student_id);
+    if (s && s.student_phone) {
+      const settings = await getSettings(db);
+      const text = fillTemplate(settings.tpl_word_retest, { 학원: settings.academy_name, 학생: s.name, 일시: retestText(at), 교재: t.book || '', 범위: t.range || '', 메모: clean(body.memo) ? `\n${clean(body.memo)}` : '' });
+      const res = await sendMessages(env, db, settings, user.id, [{ kind: '재시험 안내', student_id: t.student_id, to: s.student_phone, text, ref_type: 'word', ref_id: t.id }]);
+      sent = res[0].status;
+    } else sent = '학생 번호 없음';
+  }
+  return { ok: true, retest_at: at, sent };
+});
+route('DELETE', '/api/word/tests/:id/retest', async ({ db, user, params }) => {
+  if (!(user.role === 'teacher' && !isManager(user))) fail(403, '재시험 일정은 선생님만 정할 수 있어요');
+  const t = await openFailedTest(db, user, params.id);
+  await q.run(db, 'UPDATE word_tests SET retest_at = NULL, retest_memo = NULL, retest_by = NULL WHERE id = ?', t.id);
+  return { ok: true };
+});
+// 재시험 일정: 아직 통과 못 한 시험(최근 60일) — 예약된 것은 시간순, 예약 안 된 것은 뒤에
+route('GET', '/api/word/retests', async ({ db, user }) => {
+  const mineOnly = !seesAll(user);
+  const rows = await q.all(db, `SELECT w.*, s.name AS student_name, s.photo_v AS student_photo_v, c.name AS course_name, c.teacher_id AS course_teacher_id, u.name AS teacher_name
+    FROM word_tests w JOIN students s ON s.id = w.student_id LEFT JOIN courses c ON c.id = w.course_id LEFT JOIN users u ON u.id = w.teacher_id
+    WHERE w.passed = 0 AND w.date >= ? AND s.status = '재원'
+      AND NOT EXISTS (SELECT 1 FROM word_tests x WHERE x.parent_id = IFNULL(w.parent_id, w.id) AND x.attempt > w.attempt)
+      ${mineOnly ? 'AND (c.teacher_id = ? OR w.teacher_id = ?)' : ''}
+    ORDER BY CASE WHEN w.retest_at IS NULL THEN 1 ELSE 0 END, w.retest_at, w.date`, addDays(today(), -60), ...(mineOnly ? [user.id, user.id] : []));
+  return { today: today(), retests: rows.map((t) => ({ ...wordPublic(t), course_name: t.course_name, student_photo_v: t.student_photo_v })) };
+});
 // 학생별 단어시험 기록
 route('GET', '/api/word/student/:id', async ({ db, user, params }) => {
   const sid = Number(params.id);
@@ -1607,7 +1760,7 @@ async function wordSheetPage(db, token, wantPhoto) {
   const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const html = `<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${esc(t.student_name)} 단어시험</title>
 <style>body{margin:0;font-family:-apple-system,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:#f7f9f2;color:#1f330a}.w{max-width:560px;margin:0 auto;padding:18px}.c{background:#fff;border-radius:16px;padding:18px;box-shadow:0 2px 10px rgba(0,0,0,.06);margin-bottom:12px}h1{font-size:20px;margin:0 0 4px}.m{color:#6b7a5c;font-size:14px}.s{font-size:40px;font-weight:800;margin:10px 0}.p{display:inline-block;padding:4px 12px;border-radius:99px;font-weight:700}.ok{background:#8dc63f}.no{background:#fdeeec;color:#c8443c}img{width:100%;border-radius:12px;display:block}</style></head>
-<body><div class="w"><div class="c"><div class="m">${esc(settings.academy_name)} · ${esc(t.date)}</div><h1>${esc(t.student_name)} 단어시험 ${esc(attemptLabel(t.attempt))}</h1><div class="m">${esc(t.book || '')} ${esc(t.range || '')}${wordLabel(t) ? ' · ' + esc(wordLabel(t)) : ''}</div>
+<body><div class="w"><div class="c"><div class="m">${esc(settings.academy_name)} · ${esc(t.date)}</div><h1>${esc(t.student_name)} 단어시험 ${esc(attemptLabel(t.attempt))}</h1><div class="m">${esc(t.book || '')} ${esc(t.range || '')}</div>
 <div class="s">${t.score} / ${t.total}</div><span class="p ${t.passed ? 'ok' : 'no'}">${t.passed ? '통과' : '불통 · 통과 기준 ' + t.pass_score + '개'}</span>${t.memo ? `<p>${esc(t.memo)}</p>` : ''}</div>
 ${t.photo ? `<div class="c"><img src="/w/${esc(token)}/photo" alt="시험지"></div>` : ''}</div></body></html>`;
   return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', 'x-robots-tag': 'noindex' } });
@@ -2254,8 +2407,9 @@ route('PUT', '/api/settings', async ({ db, env, body }) => {
   }
   if ('tpl_log_remind' in body) set.push(['tpl_log_remind', need(body.tpl_log_remind, '일지 알림 문구')]);
   if ('word_pass_pct' in body) set.push(['word_pass_pct', String(Math.max(1, Math.min(100, Math.trunc(Number(body.word_pass_pct) || 90))))]);
-  if ('word_books' in body) set.push(['word_books', JSON.stringify((body.word_books || []).map((b) => ({ name: clean(b.name), days: Math.max(1, Math.min(200, Math.trunc(Number(b.days) || 0))), unit: b.unit === 'Unit' ? 'Unit' : 'Day' })).filter((b) => b.name))]);
+  if ('word_books' in body) set.push(['word_books', JSON.stringify((body.word_books || []).map((b) => ({ name: clean(b.name), days: Math.max(1, Math.min(200, Math.trunc(Number(b.days) || 0))) })).filter((b) => b.name))]);
   if ('tpl_word' in body) set.push(['tpl_word', need(body.tpl_word, '단어시험 문자 문구')]);
+  if ('tpl_word_retest' in body) set.push(['tpl_word_retest', need(body.tpl_word_retest, '재시험 안내 문자 문구')]);
   if ('discount_items' in body) {
     const items = (body.discount_items || [])
       .map((x, i) => ({ id: clean(x.id) || `d${Date.now().toString(36)}${i}`, name: clean(x.name), amount: money(x.amount) }))
